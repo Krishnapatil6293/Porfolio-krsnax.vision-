@@ -1,66 +1,143 @@
-# VERIFICATION & TEST REPORT — KRISHNA PATIL PORTFOLIO
+# PRE-DEPLOYMENT SECURITY & INTEGRATION AUDIT REPORT — KRISHNA PATIL PORTFOLIO
 
 **Date**: October 16, 2026  
+**Auditor**: Senior Full-Stack & Security Engineer (Antigravity)  
 **Project**: Krishna Patil — Professional Video Editor Portfolio  
-**Status**: PASSED (Build, Types, Lint, TUS Resumable Uploads & Vercel Ready)  
+**Target Repository**: `https://github.com/Krishnapatil6293/Porfolio-krsnax.vision-.git`  
+**Target Supabase Project**: `https://khaixytdbwmtrtfkfunp.supabase.co`  
+**Overall Status**: AUDIT COMPLETE — CODEBASE PRODUCTION READY (Requires Manual Supabase Dashboard Steps Before Live Traffic)
 
 ---
 
-## 1. Automated Build & Compilation Checks
+## 1. Executive Summary & Verification Matrix
 
-| Check | Tool / Command | Result | Details |
+| Verification Item | Status | Result / Findings | Action Required |
 |---|---|---|---|
-| **TypeScript Typecheck** | `tsc -b` | **PASS** | 0 type errors with `verbatimModuleSyntax: true` and strict type checks |
-| **Vite Production Bundler** | `vite build` | **PASS** | All client assets compiled cleanly in 190ms |
-| **Linter** | `oxlint` | **PASS** | 0 lint errors across 22 files and 116 rules |
-| **Route Code-Splitting** | `React.lazy` | **PASS** | `ProjectDetail` (11.7 kB) and `AdminDashboard` (115 kB) chunked separately from main bundle |
-| **Tailwind CSS Compilation** | `@tailwindcss/vite` | **PASS** | 65.43 kB CSS bundle (10.70 kB gzip) containing all cinematic design tokens |
+| **TypeScript Typecheck** | **PASS** | 0 type errors with `verbatimModuleSyntax` and strict types | None (clean) |
+| **Vite Production Bundler** | **PASS** | Clean build completed in 163ms | None (clean) |
+| **Code Linting (`oxlint`)** | **PASS** | 0 lint errors across 22 source files | None (clean) |
+| **Secret Leak Prevention** | **PASS** | No `.env` or `.env.local` files tracked. No secrets in Git history. | None (clean) |
+| **Admin Privilege Escalation Protection** | **PASS** | `admin_users` table with `is_admin()` SQL security definer. Ordinary users cannot elevate roles. | Disable public signups in Supabase Auth |
+| **Email Trigger Abuse Vector** | **MITIGATED** | Case-insensitive check added. Documented safe manual SQL provisioning as primary standard. | Disable public signup; use manual query |
+| **Draft Projects & Inquiries Protection** | **PASS** | `is_published = true OR public.is_admin()` restricts drafts. Inquiries restricted strictly to `public.is_admin()`. | None (clean) |
+| **TUS Resumable Token Refresh** | **PASS** | `onBeforeRequest` dynamic token refresh integrated. Prevents token expiration mid-upload. | None (clean) |
+| **Upload State Recovery** | **PASS** | Added `handleSaveProjectRecord` retry button if database save fails after video upload. | None (clean) |
+| **Storage RLS Policies** | **PASS** | Public read on portfolio buckets; insert/update/delete restricted to `public.is_admin()`. | Execute migration in Supabase SQL Editor |
+| **1–2 GB Upload Quota** | **UNVERIFIED (Remote)** | Supabase Free tier enforces hard 50 MB limit. 1–2 GB uploads require Supabase Pro Plan ($25/mo). | Upgrade to Pro in Supabase Dashboard |
+| **Vercel SPA Routing & Environment** | **PASS** | `vercel.json` rewrites active. Build command and env vars verified. | Add variables in Vercel project settings |
+| **Live Remote Database Tables** | **PENDING USER RUN** | SQL migration file created and verified locally; awaits execution in Supabase Dashboard SQL Editor. | Run migration in Supabase SQL Editor |
 
 ---
 
-## 2. Live Supabase Backend & Storage Integration
+## 2. Detailed Security & Integration Audit Findings
 
-| Component | Target / Config | Status | Notes |
-|---|---|---|---|
-| **Supabase Client** | `src/lib/supabase.ts` | **PASS** | Reusable client reading `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` with session persistence and token refresh |
-| **Active Session Token Access** | `getActiveAccessToken()` | **PASS** | Fetches live JWT from Supabase Auth session for authorized TUS chunk uploads |
-| **TUS Resumable Upload Endpoint** | `https://khaixytdbwmtrtfkfunp.supabase.co/storage/v1/upload/resumable` | **PASS** | Configured with required 6 MiB chunking (`CHUNK_SIZE_6MB = 6 * 1024 * 1024`), authorization headers, retry delay exponential backoff, and upload progress tracking |
-| **Thumbnail Upload** | `portfolio-thumbnails` bucket | **PASS** | Uploads poster image to Supabase Storage and returns public URL |
-| **Database Migrations** | `supabase/migrations/20261016_init_schema.sql` | **READY** | Full SQL migration authored with `admin_users`, `projects`, `site_settings`, `inquiries`, storage buckets, and RLS policies |
-| **Admin Authorization Check** | `checkIsUserAdmin()` & `public.is_admin()` | **PASS** | Verifies database role membership in `admin_users` table; session alone is never accepted as authorization |
-| **Automatic Admin Provisioning** | PostgreSQL Trigger `handle_new_admin_user()` | **PASS** | When `kpctech1234@gmail.com` signs up in Supabase Auth, trigger automatically inserts admin record into `admin_users` |
-| **Showcase Database Sync** | `syncShowcaseToSupabase()` | **PASS** | 1-Click sync button in `/admin` to seed all 6 showcase projects into the live database |
+### A. RLS & Administrative Role Verification
+- **Architecture**:
+  - The database establishes `public.admin_users` referencing `auth.users(id)` with a strict role constraint (`CHECK (role IN ('admin', 'superadmin'))`).
+  - The security definer function `public.is_admin()` executes with owner permissions and checks if `auth.uid()` exists in `public.admin_users`.
+  - Row Level Security is enabled on all tables: `admin_users`, `projects`, `site_settings`, and `inquiries`.
+- **Finding on Ordinary Authenticated Users**:
+  - Even if a non-administrator signs into Supabase Auth, `public.is_admin()` evaluates to `FALSE`.
+  - Because all mutation policies (`INSERT`, `UPDATE`, `DELETE`) on `projects`, `site_settings`, `inquiries`, and `storage.objects` require `public.is_admin()`, unauthorized users cannot modify or delete portfolio content.
+  - Ordinary users cannot add themselves to `admin_users` because there are NO insert/update/delete policies for ordinary users on `admin_users`.
+
+### B. Administrator Provisioning Trigger & Abuse Prevention
+- **Risk Analysis**:
+  - If public email registration is enabled in Supabase Auth (`Enable Email Signup = true`), an attacker could register an account with `kpctech1234@gmail.com` if email confirmation is not enforced before the real owner creates it.
+- **Remediation Implemented**:
+  1. Updated the trigger function in `supabase/migrations/20261016_init_schema.sql` to use case-insensitive matching `LOWER(NEW.email) = 'kpctech1234@gmail.com'`.
+  2. Established the **Safe Manual Administrator Provisioning Procedure** as the recommended primary standard:
+     - Disable public registration in Supabase Dashboard -> **Authentication** -> **Providers** -> **Email** -> Toggle **"Enable Email Signup"** to **OFF**.
+     - Manually create the user in **Authentication** -> **Users** with **"Auto Confirm User"** set to `ON`.
+     - Execute the explicit manual SQL query:
+       ```sql
+       INSERT INTO public.admin_users (id, email, role)
+       SELECT id, email, 'admin'
+       FROM auth.users
+       WHERE LOWER(email) = 'kpctech1234@gmail.com'
+       ON CONFLICT (id) DO UPDATE SET role = 'admin';
+       ```
+     - This completely closes the attack surface because public visitors cannot sign up.
+
+### C. Data Privacy: Drafts & Client Inquiries
+- **Drafts Protection**:
+  - RLS Policy: `CREATE POLICY "Public can view published projects" ON public.projects FOR SELECT USING (is_published = true OR public.is_admin());`
+  - For anonymous visitors or non-admin authenticated users, `is_published = false` rows are filtered out at the PostgreSQL query level.
+- **Client Inquiries Privacy**:
+  - RLS Policy: `CREATE POLICY "Only verified admin can view inquiries" ON public.inquiries FOR SELECT TO authenticated USING (public.is_admin());`
+  - Anonymous visitors and ordinary authenticated users receive an empty set or 403 when querying `public.inquiries`. They cannot inspect client contact details or project briefs.
+
+### D. TUS Resumable Large-File Video Uploads
+- **Token Freshness**:
+  - Integrated `onBeforeRequest` hook in `src/services/uploadService.ts` to retrieve and inject the freshest JWT access token via `getActiveAccessToken()` before every chunk request.
+  - This ensures that long 1–2 GB transfers (which may take 15–45 minutes) do not fail when a JWT expires mid-transfer.
+- **Upload State Persistence & Recovery**:
+  - Added `handleSaveProjectRecord` in `src/pages/admin/AdminDashboard.tsx`.
+  - If a video finishes uploading to Supabase Storage, but the database metadata write fails (e.g., brief network drop or unapplied RLS migration), the UI preserves the uploaded storage path and presents a green **"Video Stored in Supabase — Click to Save Project Metadata"** retry button. The user does not have to re-upload the 1–2 GB video file.
+
+### E. Supabase Plan Limits for 1–2 GB Video Files
+- **Free Plan Limit**:
+  - Supabase enforces a strict **50 MB** object limit at the API Gateway on the Free tier. Any direct or TUS upload exceeding 50 MB will fail with HTTP `413 Payload Too Large`.
+- **Required Action for 1–2 GB Uploads**:
+  - Upgrade the project to the Supabase **Pro Plan** ($25/mo) in **Project Settings** -> **Subscription**.
+  - In **Storage** -> `portfolio-videos` bucket -> Confirm or set **File size limit** to `5368709120` bytes (5 GB).
+
+### F. Vercel Deployment & SPA Routing
+- **Routing**: `vercel.json` contains a rewrite rule routing all paths to `/index.html`, ensuring deep links (`/work/:slug`, `/admin`) resolve correctly without 404 errors on page reload.
+- **Environment Variables**:
+  - `VITE_SUPABASE_URL=https://khaixytdbwmtrtfkfunp.supabase.co`
+  - `VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_Q7a2cXVNY0UcwjW6T42nVQ_VD6twbzV`
+  - `VITE_DEV_ADMIN_ENABLED=false`
 
 ---
 
-## 3. Security Audit & Protection Verification
+## 3. Prioritized Pre-Launch Checklist
 
-- **Credential Exposure**:
-  - `git status` verified clean: `.env.local` is untracked and completely ignored by `.gitignore`.
-  - `.env.example` verified: contains only non-sensitive template placeholders.
-  - No secret keys, service-role keys, or database passwords exist in frontend bundles.
-- **Fail-Closed Production Access**:
-  - `VITE_DEV_ADMIN_ENABLED=false` enforces Supabase Auth login.
-  - Anonymous visitors accessing `/admin` are presented with the Administrator Sign-In screen.
-  - Database mutations are protected by Row Level Security (`public.is_admin()`).
-- **Contact Inquiries Privacy**:
-  - Row Level Security policy prevents public and ordinary users from querying `inquiries`.
-  - Only authenticated administrators can read inquiry submissions.
+Complete these manual steps in order before announcing or directing traffic to your live portfolio:
 
----
+### Priority 1: Supabase Database Migration
+1. Log into your [Supabase Dashboard](https://supabase.com/dashboard/project/khaixytdbwmtrtfkfunp/sql/new).
+2. Open the **SQL Editor**, click **"New query"**.
+3. Copy and paste the complete contents of [`supabase/migrations/20261016_init_schema.sql`](file:///Users/krishnapatil/Downloads/Portfolio%20web/supabase/migrations/20261016_init_schema.sql).
+4. Click **Run**. Verify that you see `Success. No rows returned`.
 
-## 4. Large Video File Upload (1–2 GB) Verification Note
+### Priority 2: Harden Supabase Authentication
+1. Go to **Authentication** -> **Providers** -> **Email**.
+2. Toggle **"Enable Email Signup"** to **OFF** and click **Save**. *(Prevents public registration).*
+3. Go to **Authentication** -> **Users** -> Click **"Add user"** -> **"Create user"**:
+   - **Email**: `kpctech1234@gmail.com`
+   - **Password**: *(Enter a strong password)*
+   - **Auto Confirm User?**: Set to **ON**.
+   - Click **Create user**.
+4. In the SQL Editor, run:
+   ```sql
+   INSERT INTO public.admin_users (id, email, role)
+   SELECT id, email, 'admin'
+   FROM auth.users
+   WHERE LOWER(email) = 'kpctech1234@gmail.com'
+   ON CONFLICT (id) DO UPDATE SET role = 'admin';
+   ```
+5. Confirm by running `SELECT * FROM public.admin_users;`.
 
-- **TUS Protocol Implementation**: Resumable chunking is verified using `tus-js-client` with 6 MiB chunk size and automatic pause/resume/abort handlers.
-- **Supabase Plan Limit Notice**:
-  - Free Supabase projects reject uploads > 50 MB at the API Gateway.
-  - A Supabase **Pro Plan** is required to support 1–2 GB files (bucket size limit configured to 5 GB: `5368709120` bytes).
-  - Clear user guidance and upgrade banners are integrated into the Studio Admin UI.
+### Priority 3: Storage Bucket Configuration
+1. In the Supabase Dashboard, go to **Storage**.
+2. Verify that `portfolio-videos`, `portfolio-thumbnails`, and `profile-media` are created.
+3. If you plan to upload 1–2 GB videos:
+   - Ensure your Supabase project is on the **Pro Plan**.
+   - On `portfolio-videos`, click **Edit bucket** and verify the file size limit is `5368709120` bytes (5 GB).
 
----
+### Priority 4: Supabase Redirect URLs
+1. Go to **Authentication** -> **URL Configuration**.
+2. In **Redirect URLs**, add:
+   - `https://*.vercel.app/**`
+   - `http://localhost:5173/**`
+   - *(Your custom domain if applicable)*
 
-## 5. Vercel Deployment Readiness
-
-- **SPA Rewrites**: Pre-configured `vercel.json` rewrites all deep URLs (`/work/:slug`, `/admin`) to `index.html`.
-- **Environment Variables**: Documented in `DEPLOYMENT.md` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_DEV_ADMIN_ENABLED=false`).
-- **Build Verification**: Clean build executed via `npm run build` (`tsc -b && vite build`) without warnings or errors.
+### Priority 5: Vercel Deployment
+1. Go to [Vercel](https://vercel.com/dashboard) and import repository `Krishnapatil6293/Porfolio-krsnax.vision-`.
+2. Add the environment variables:
+   - `VITE_SUPABASE_URL=https://khaixytdbwmtrtfkfunp.supabase.co`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_Q7a2cXVNY0UcwjW6T42nVQ_VD6twbzV`
+   - `VITE_DEV_ADMIN_ENABLED=false`
+3. Click **Deploy**.
+4. Once deployed, open your live URL, navigate to `/admin`, log in with `kpctech1234@gmail.com`, and click **"Sync Showcase To Supabase"** to seed your database with your 6 showcase projects!

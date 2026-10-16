@@ -144,7 +144,12 @@ CREATE POLICY "Public can view site settings"
     ON public.site_settings FOR SELECT
     USING (true);
 
--- Only verified admin can update site settings
+-- Only verified admin can insert or update site settings
+CREATE POLICY "Only verified admin can insert site settings"
+    ON public.site_settings FOR INSERT
+    TO authenticated
+    WITH CHECK (public.is_admin());
+
 CREATE POLICY "Only verified admin can update site settings"
     ON public.site_settings FOR UPDATE
     TO authenticated
@@ -239,9 +244,24 @@ CREATE POLICY "Admin manage profile media"
     USING (bucket_id = 'profile-media' AND public.is_admin());
 
 -- ==============================================================================
--- AUTOMATIC ADMIN PROVISIONING TRIGGER FOR kpctech1234@gmail.com
--- Automatically links your Supabase Auth user to admin_users upon creation!
+-- ADMINISTRATOR PROVISIONING FOR kpctech1234@gmail.com
+--
+-- RECOMMENDED SAFE MANUAL PROCEDURE:
+-- 1. In Supabase Dashboard -> Authentication -> Providers -> Email, disable "Enable Email Signup"
+--    so public visitors cannot create accounts.
+-- 2. In Supabase Dashboard -> Authentication -> Users, click "Add user" -> "Create user":
+--    Email: kpctech1234@gmail.com
+--    Password: <your-secure-password>
+--    Auto Confirm User: ON
+-- 3. Execute this manual query to grant admin role:
+--    INSERT INTO public.admin_users (id, email, role)
+--    SELECT id, email, 'admin'
+--    FROM auth.users
+--    WHERE LOWER(email) = 'kpctech1234@gmail.com'
+--    ON CONFLICT (id) DO UPDATE SET role = 'admin';
 -- ==============================================================================
+
+-- Convenience trigger for new user creation (hardened with case-insensitive check):
 CREATE OR REPLACE FUNCTION public.handle_new_admin_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -249,9 +269,9 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  IF NEW.email = 'kpctech1234@gmail.com' THEN
+  IF LOWER(NEW.email) = 'kpctech1234@gmail.com' THEN
     INSERT INTO public.admin_users (id, email, role)
-    VALUES (NEW.id, NEW.email, 'admin')
+    VALUES (NEW.id, LOWER(NEW.email), 'admin')
     ON CONFLICT (id) DO UPDATE SET role = 'admin';
   END IF;
   RETURN NEW;

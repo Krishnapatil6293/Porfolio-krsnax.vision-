@@ -99,6 +99,15 @@ export const uploadService = {
           apikey: publishableKey,
           'x-upsert': 'true',
         },
+        onBeforeRequest: async (req) => {
+          try {
+            const freshToken = await getActiveAccessToken();
+            req.setHeader('authorization', `Bearer ${freshToken}`);
+            req.setHeader('apikey', publishableKey);
+          } catch (e) {
+            console.warn('Failed to refresh token before TUS chunk request:', e);
+          }
+        },
         uploadDataDuringCreation: true,
         removeFingerprintOnSuccess: true,
         metadata: {

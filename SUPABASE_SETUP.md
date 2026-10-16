@@ -75,29 +75,39 @@ The database schema, RLS policies, indexes, and automatic admin provisioning tri
 
 ---
 
-## 5. Creating Your Administrator Account
+## 5. Creating Your Administrator Account (Hardened Security)
 
-To log into your admin dashboard (`/admin`), follow these steps:
+For maximum security on a personal portfolio website, public visitors should never be able to register accounts. Follow these three steps:
 
-### Option A: Via Supabase Dashboard (Recommended)
-1. Go to your [Supabase Dashboard](https://supabase.com/dashboard/project/khaixytdbwmtrtfkfunp) -> **Authentication** -> **Users**.
+### Step 1: Disable Public Registration in Supabase Auth
+1. Go to your [Supabase Dashboard](https://supabase.com/dashboard/project/khaixytdbwmtrtfkfunp) -> **Authentication** -> **Providers** -> **Email**.
+2. Toggle **"Enable Email Signup"** to **OFF** (Disabled).
+3. Click **Save**.
+*(This completely eliminates any risk of unauthorized users attempting to sign up or abuse registration endpoints).*
+
+### Step 2: Create Administrator User
+1. In the Supabase Dashboard, go to **Authentication** -> **Users**.
 2. Click **"Add user"** -> **"Create user"**.
 3. Enter:
    - **User Email**: `kpctech1234@gmail.com`
-   - **Password**: *Choose a secure password*
-   - Check **"Auto Confirm User?"** to `ON` (so no email confirmation is needed).
+   - **Password**: *(Choose a strong, unique master password)*
+   - Toggle **"Auto Confirm User?"** to **ON**.
 4. Click **"Create user"**.
-5. **The automatic trigger (`handle_new_admin_user()`) will instantly insert your user ID into `public.admin_users` with the `admin` role!**
 
-### Option B: If the User Was Already Created Before Running Migration
-If you had already created the user in Auth before running the SQL script, run this quick query in the SQL Editor to grant admin access:
+### Step 3: Verify or Explicitly Assign Admin Role
+The hardened SQL trigger automatically populates `public.admin_users`. To guarantee access or if the user existed prior to running the migration, run this query in the **SQL Editor**:
 ```sql
 INSERT INTO public.admin_users (id, email, role)
 SELECT id, email, 'admin'
 FROM auth.users
-WHERE email = 'kpctech1234@gmail.com'
+WHERE LOWER(email) = 'kpctech1234@gmail.com'
 ON CONFLICT (id) DO UPDATE SET role = 'admin';
 ```
+Verify the record:
+```sql
+SELECT * FROM public.admin_users;
+```
+You will see 1 row with your user UUID and `role: admin`.
 
 ---
 

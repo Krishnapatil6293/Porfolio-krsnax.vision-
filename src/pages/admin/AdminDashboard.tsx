@@ -269,6 +269,75 @@ export const AdminDashboard: React.FC = () => {
     setPosterPreview(url);
   };
 
+  // Save Project Record to Database (using uploaded video and thumbnail)
+  const handleSaveProjectRecord = async (videoStoragePath: string, playbackUrl: string | null) => {
+    try {
+      let finalThumbnailPath = posterPreview || '/thumbnails/tokyo-noir.jpg';
+
+      if (uploadPosterFile) {
+        try {
+          const thumbRes = await uploadService.uploadThumbnailImage(uploadPosterFile);
+          finalThumbnailPath = thumbRes.publicUrl;
+        } catch (thumbErr) {
+          console.warn('Thumbnail upload to Supabase storage failed, using preview URL:', thumbErr);
+        }
+      }
+
+      const tagsArray = uploadForm.tags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const toolsArray = uploadForm.tools_used
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      const videoSize = uploadVideoFile ? uploadVideoFile.size : (uploadState.totalBytes || 0);
+
+      const newProj = await projectsService.createProject({
+        title: uploadForm.title || (uploadVideoFile ? uploadVideoFile.name : 'Untitled Edit'),
+        description: uploadForm.description || 'Cinematic video edit produced by Krishna Patil.',
+        category: uploadForm.category,
+        tags: tagsArray,
+        client_name: uploadForm.client_name || null,
+        project_date: uploadForm.project_date || 'October 2026',
+        thumbnail_path: finalThumbnailPath,
+        original_video_path: videoStoragePath,
+        playback_video_path: playbackUrl,
+        video_duration_seconds: Number(uploadForm.video_duration_seconds) || 60,
+        video_size_bytes: videoSize,
+        is_featured: uploadForm.is_featured,
+        is_published: uploadForm.is_published,
+        role_description: uploadForm.role_description,
+        tools_used: toolsArray,
+      });
+
+      setProjects((prev) => [newProj, ...prev]);
+      setNotice({
+        type: 'success',
+        message: `Upload complete! Project "${newProj.title}" stored in Supabase.`,
+      });
+
+      // Reset upload form
+      setUploadVideoFile(null);
+      setUploadPosterFile(null);
+      setPosterPreview(null);
+      setUploadState({
+        status: 'idle',
+        progress: 0,
+        bytesUploaded: 0,
+        totalBytes: 0,
+        speed: '0 MB/s',
+        estimatedTimeRemaining: '0s',
+      });
+    } catch (err: any) {
+      setNotice({
+        type: 'error',
+        message: `Video uploaded to Supabase Storage (${videoStoragePath}), but database save failed: ${err.message}. You can fix the form and click "Save Project Metadata" to retry without re-uploading.`,
+      });
+    }
+  };
+
   // Start Resumable Upload
   const handleStartUpload = async () => {
     if (!uploadVideoFile) {
@@ -284,62 +353,10 @@ export const AdminDashboard: React.FC = () => {
 
           // Upload completed! Now save to database
           if (state.status === 'completed') {
-            try {
-              let finalThumbnailPath = posterPreview || '/thumbnails/tokyo-noir.jpg';
-
-              // If a custom poster image was chosen, upload to portfolio-thumbnails bucket
-              if (uploadPosterFile) {
-                try {
-                  const thumbRes = await uploadService.uploadThumbnailImage(uploadPosterFile);
-                  finalThumbnailPath = thumbRes.publicUrl;
-                } catch (thumbErr) {
-                  console.warn('Thumbnail upload to Supabase storage failed, using preview URL:', thumbErr);
-                }
-              }
-
-              const tagsArray = uploadForm.tags
-                .split(',')
-                .map((t) => t.trim())
-                .filter(Boolean);
-              const toolsArray = uploadForm.tools_used
-                .split(',')
-                .map((t) => t.trim())
-                .filter(Boolean);
-
-              const newProj = await projectsService.createProject({
-                title: uploadForm.title || uploadVideoFile.name,
-                description: uploadForm.description || 'Cinematic video edit produced by Krishna Patil.',
-                category: uploadForm.category,
-                tags: tagsArray,
-                client_name: uploadForm.client_name || null,
-                project_date: uploadForm.project_date || 'October 2026',
-                thumbnail_path: finalThumbnailPath,
-                original_video_path: state.storagePath || `portfolio-videos/${uploadVideoFile.name}`,
-                playback_video_path: state.publicUrl || null,
-                video_duration_seconds: Number(uploadForm.video_duration_seconds) || 60,
-                video_size_bytes: uploadVideoFile.size,
-                is_featured: uploadForm.is_featured,
-                is_published: uploadForm.is_published,
-                role_description: uploadForm.role_description,
-                tools_used: toolsArray,
-              });
-
-              setProjects((prev) => [newProj, ...prev]);
-              setNotice({
-                type: 'success',
-                message: `Upload complete! Project "${newProj.title}" stored in Supabase.`,
-              });
-
-              // Reset upload form
-              setUploadVideoFile(null);
-              setUploadPosterFile(null);
-              setPosterPreview(null);
-            } catch (err: any) {
-              setNotice({
-                type: 'error',
-                message: `Video uploaded to Supabase Storage, but metadata write failed: ${err.message}. Ensure RLS is configured.`,
-              });
-            }
+            await handleSaveProjectRecord(
+              state.storagePath || `portfolio-videos/${uploadVideoFile.name}`,
+              state.publicUrl || null
+            );
           }
         },
       });
@@ -1227,18 +1244,33 @@ export const AdminDashboard: React.FC = () => {
                 </label>
               </div>
 
-              {/* Action Button */}
-              <button
-                type="button"
-                onClick={handleStartUpload}
-                disabled={uploadState.status === 'uploading'}
-                className="w-full py-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs sm:text-sm uppercase tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 cursor-pointer"
-              >
-                <UploadCloud className="w-5 h-5" />
-                <span>
-                  {uploadState.status === 'uploading' ? 'Upload In Progress...' : 'Start Resumable TUS Upload & Save To Supabase'}
-                </span>
-              </button>
+              {/* Action Button: Handles initial upload or retry metadata save if video is already uploaded */}
+              {uploadState.status === 'completed' && uploadState.storagePath ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSaveProjectRecord(uploadState.storagePath!, uploadState.publicUrl || null)
+                  }
+                  className="w-full py-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs sm:text-sm uppercase tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 cursor-pointer"
+                >
+                  <Save className="w-5 h-5" />
+                  <span>Video Stored in Supabase — Click to Save Project Metadata</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleStartUpload}
+                  disabled={uploadState.status === 'uploading'}
+                  className="w-full py-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-xs sm:text-sm uppercase tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 cursor-pointer"
+                >
+                  <UploadCloud className="w-5 h-5" />
+                  <span>
+                    {uploadState.status === 'uploading'
+                      ? 'Upload In Progress...'
+                      : 'Start Resumable TUS Upload & Save To Supabase'}
+                  </span>
+                </button>
+              )}
             </div>
           </div>
         )}
