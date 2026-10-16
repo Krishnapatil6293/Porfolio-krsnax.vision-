@@ -32,20 +32,63 @@ export const getSupabasePublishableKey = (): string => supabasePublishableKey ||
 export const getSupabaseAnonKey = (): string => supabasePublishableKey || '';
 
 /**
- * Returns the current authenticated user's access token, or the publishable key as fallback.
- * Essential for authenticating TUS resumable uploads against Supabase Storage.
+ * Validates that a string is syntactically a valid compact JWS / JWT structure.
+ * Compact JWS consists of three dot-separated Base64URL-encoded parts.
  */
-export const getActiveAccessToken = async (): Promise<string> => {
-  if (!supabase) return getSupabasePublishableKey();
+export const isValidJwt = (token: string | null | undefined): boolean => {
+  if (!token || typeof token !== 'string') return false;
+  const parts = token.trim().split('.');
+  if (parts.length !== 3) return false;
+  return parts[0].startsWith('eyJ') && parts[1].length > 0 && parts[2].length > 0;
+};
+
+/**
+ * Retrieves a valid, verified JWT access token for the authenticated administrator.
+ * Automatically attempts to refresh the session if expired.
+ * Returns null if no valid authenticated user session exists.
+ * NEVER returns the publishable API key as a Bearer token.
+ */
+export const getActiveAccessToken = async (): Promise<string | null> => {
+  if (!supabase) return null;
   try {
     const { data: { session } } = await supabase.auth.getSession();
-    if (session?.access_token) {
+    
+    if (session?.access_token && isValidJwt(session.access_token)) {
+      // Check if token is expired or expiring in next 60 seconds
+      const expiresAt = session.expires_at; // unix timestamp in seconds
+      const now = Math.floor(Date.now() / 1000);
+      if (expiresAt && expiresAt - now < 60) {
+        // Token is expired or expiring soon, refresh it
+        const { data: refreshData } = await supabase.auth.refreshSession();
+        if (refreshData?.session?.access_token && isValidJwt(refreshData.session.access_token)) {
+          return refreshData.session.access_token;
+        }
+      }
       return session.access_token;
     }
+
+    // Try explicit refresh if no active session in memory
+    const { data: refreshData } = await supabase.auth.refreshSession();
+    if (refreshData?.session?.access_token && isValidJwt(refreshData.session.access_token)) {
+      return refreshData.session.access_token;
+    }
   } catch (err) {
-    console.warn('Failed to retrieve active session access token:', err);
+    console.warn('Failed to retrieve or refresh active session access token:', err);
   }
-  return getSupabasePublishableKey();
+  return null;
+};
+
+/**
+ * Retrieves the currently authenticated Supabase Auth user, if any.
+ */
+export const getCurrentAuthUser = async () => {
+  if (!supabase) return null;
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    return user;
+  } catch {
+    return null;
+  }
 };
 
 /**

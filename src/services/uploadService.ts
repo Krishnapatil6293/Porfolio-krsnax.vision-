@@ -3,6 +3,9 @@ import {
   getSupabaseUrl,
   getSupabasePublishableKey,
   getActiveAccessToken,
+  isValidJwt,
+  getCurrentAuthUser,
+  checkIsUserAdmin,
   isSupabaseConfigured,
   supabase,
 } from '../lib/supabase';
@@ -79,7 +82,6 @@ export const uploadService = {
 
     const supabaseUrl = getSupabaseUrl();
     const publishableKey = getSupabasePublishableKey();
-    const token = await getActiveAccessToken();
 
     let lastBytes = 0;
     let lastTime = Date.now();
@@ -88,6 +90,62 @@ export const uploadService = {
 
     // Real Supabase TUS resumable transfer
     if (isSupabaseConfigured()) {
+      // 1. Retrieve and validate active JWT token from Supabase Auth session
+      const token = await getActiveAccessToken();
+      if (!token || !isValidJwt(token)) {
+        options.onStateChange({
+          status: 'error',
+          progress: 0,
+          bytesUploaded: 0,
+          totalBytes: file.size,
+          speed: '0 MB/s',
+          estimatedTimeRemaining: '0s',
+          errorMessage:
+            'Authentication Required: No active Supabase administrator session. Please sign in to Studio Admin with your account (kpctech1234@gmail.com) before uploading videos.',
+        });
+        return {
+          controller: { pause: () => {}, resume: () => {}, abort: () => {} },
+        };
+      }
+
+      // 2. Verify authenticated user has administrator permissions
+      const authUser = await getCurrentAuthUser();
+      if (!authUser) {
+        options.onStateChange({
+          status: 'error',
+          progress: 0,
+          bytesUploaded: 0,
+          totalBytes: file.size,
+          speed: '0 MB/s',
+          estimatedTimeRemaining: '0s',
+          errorMessage:
+            'Authentication Required: Administrator session expired. Please sign in again.',
+        });
+        return {
+          controller: { pause: () => {}, resume: () => {}, abort: () => {} },
+        };
+      }
+
+      const isAdmin =
+        (await checkIsUserAdmin(authUser.id)) ||
+        authUser.email?.toLowerCase() === 'kpctech1234@gmail.com';
+
+      if (!isAdmin) {
+        options.onStateChange({
+          status: 'error',
+          progress: 0,
+          bytesUploaded: 0,
+          totalBytes: file.size,
+          speed: '0 MB/s',
+          estimatedTimeRemaining: '0s',
+          errorMessage:
+            `Access Denied: Account ${authUser.email} is authenticated, but has not been granted administrator permissions in public.admin_users.`,
+        });
+        return {
+          controller: { pause: () => {}, resume: () => {}, abort: () => {} },
+        };
+      }
+
       const endpoint = `${supabaseUrl}/storage/v1/upload/resumable`;
 
       const upload = new tus.Upload(file, {
@@ -102,7 +160,11 @@ export const uploadService = {
         onBeforeRequest: async (req) => {
           try {
             const freshToken = await getActiveAccessToken();
-            req.setHeader('authorization', `Bearer ${freshToken}`);
+            if (freshToken && isValidJwt(freshToken)) {
+              req.setHeader('authorization', `Bearer ${freshToken}`);
+            } else {
+              console.warn('Session token could not be refreshed during chunk upload');
+            }
             req.setHeader('apikey', publishableKey);
           } catch (e) {
             console.warn('Failed to refresh token before TUS chunk request:', e);
@@ -117,10 +179,23 @@ export const uploadService = {
         },
         onError: (error) => {
           console.error('TUS Upload failed:', error);
-          let userMsg = error.message || 'Video upload failed.';
-          if (file.size > FREE_TIER_LIMIT && userMsg.includes('413')) {
-            userMsg = `Upload rejected (413 Payload Too Large). Supabase Free plan has a 50 MB limit. Upgrade to Pro tier or adjust bucket limit for 1–2 GB files.`;
+          const rawMsg = error.message || '';
+          let userMsg = rawMsg || 'Video upload failed.';
+
+          if (rawMsg.includes('Invalid Compact JWS') || rawMsg.includes('AccessDenied')) {
+            userMsg =
+              'Authentication Error (403): Invalid or expired administrator session token. Please sign in again with your administrator account (kpctech1234@gmail.com).';
+          } else if (rawMsg.includes('413') || (file.size > FREE_TIER_LIMIT && rawMsg.includes('Payload Too Large'))) {
+            userMsg =
+              'Upload rejected (413 Payload Too Large): Supabase Free plan has a 50 MB limit. Upgrade to Pro tier or adjust bucket limit for 1–2 GB files.';
+          } else if (rawMsg.includes('Bucket not found') || rawMsg.includes('portfolio-videos')) {
+            userMsg =
+              'Storage Error: Bucket "portfolio-videos" was not found in Supabase. Please execute the SQL migration in your Supabase SQL Editor.';
+          } else if (rawMsg.toLowerCase().includes('violates row-level security policy') || rawMsg.toLowerCase().includes('rls')) {
+            userMsg =
+              'Storage Permission Error (RLS): Your user account is not permitted to upload to "portfolio-videos". Ensure your user ID is registered in public.admin_users.';
           }
+
           options.onStateChange({
             status: 'error',
             progress: 0,
@@ -299,6 +374,11 @@ export const uploadService = {
     const bucket = 'portfolio-thumbnails';
 
     if (isSupabaseConfigured() && supabase) {
+      const token = await getActiveAccessToken();
+      if (!token || !isValidJwt(token)) {
+        throw new Error('Authentication Required: Please sign in to Supabase as administrator before uploading thumbnail images.');
+      }
+
       const { data, error } = await supabase.storage
         .from(bucket)
         .upload(sanitizedName, file, {

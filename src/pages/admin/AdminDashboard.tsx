@@ -4,7 +4,7 @@ import { projectsService } from '../../services/projectsService';
 import { siteSettingsService } from '../../services/siteSettingsService';
 import { inquiriesService } from '../../services/inquiriesService';
 import { uploadService, formatBytes } from '../../services/uploadService';
-import { isSupabaseConfigured, supabase, checkIsUserAdmin } from '../../lib/supabase';
+import { isSupabaseConfigured, supabase, checkIsUserAdmin, isValidJwt, getActiveAccessToken } from '../../lib/supabase';
 import type { Project, SiteSettings, Inquiry, UploadState, ProjectCategory } from '../../types';
 import {
   Film,
@@ -42,13 +42,12 @@ const CATEGORIES: ProjectCategory[] = [
 ];
 
 export const AdminDashboard: React.FC = () => {
-  const isDevelopmentEnvironment =
-    import.meta.env.DEV || import.meta.env.VITE_DEV_ADMIN_ENABLED === 'true';
+  const isDevBypass = import.meta.env.VITE_DEV_ADMIN_ENABLED === 'true';
 
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(isDevelopmentEnvironment);
-  const [currentUserEmail, setCurrentUserEmail] = useState<string>(
-    isDevelopmentEnvironment ? 'kpctech1234@gmail.com (Dev Admin)' : ''
-  );
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [hasCheckedSession, setHasCheckedSession] = useState<boolean>(false);
+  const [hasSupabaseSession, setHasSupabaseSession] = useState<boolean>(false);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -100,26 +99,89 @@ export const AdminDashboard: React.FC = () => {
   });
   const uploadControllerRef = useRef<any>(null);
 
-  // Check active session on initial load
+  // Check active session on initial load and listen for auth changes
   useEffect(() => {
+    let subscription: any = null;
+
     const checkActiveSession = async () => {
       if (supabase) {
         try {
           const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user) {
-            const isUserAdmin = await checkIsUserAdmin(session.user.id);
-            if (isUserAdmin || isDevelopmentEnvironment || session.user.email === 'kpctech1234@gmail.com') {
+          if (session?.user && session?.access_token && isValidJwt(session.access_token)) {
+            const isUserAdmin =
+              (await checkIsUserAdmin(session.user.id)) ||
+              session.user.email?.toLowerCase() === 'kpctech1234@gmail.com';
+
+            if (isUserAdmin) {
               setIsAuthenticated(true);
+              setHasSupabaseSession(true);
               setCurrentUserEmail(session.user.email || 'Admin');
+            } else {
+              setIsAuthenticated(false);
+              setHasSupabaseSession(false);
+              setAuthError(
+                'Access Denied: Your account is authenticated, but has not been granted administrator permissions in public.admin_users.'
+              );
             }
+          } else if (isDevBypass) {
+            setIsAuthenticated(true);
+            setHasSupabaseSession(false);
+            setCurrentUserEmail('Dev Admin (Local Mock)');
+          } else {
+            setIsAuthenticated(false);
+            setHasSupabaseSession(false);
           }
         } catch (err) {
           console.warn('Session check error:', err);
+          if (isDevBypass) {
+            setIsAuthenticated(true);
+            setHasSupabaseSession(false);
+            setCurrentUserEmail('Dev Admin (Local Mock)');
+          }
         }
+      } else if (isDevBypass) {
+        setIsAuthenticated(true);
+        setHasSupabaseSession(false);
+        setCurrentUserEmail('Dev Admin (Local Mock)');
       }
+      setHasCheckedSession(true);
     };
+
     checkActiveSession();
-  }, [isDevelopmentEnvironment]);
+
+    if (supabase) {
+      const { data: authListener } = supabase.auth.onAuthStateChange(
+        async (event, session) => {
+          if (
+            (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') &&
+            session?.user &&
+            session?.access_token &&
+            isValidJwt(session.access_token)
+          ) {
+            const isUserAdmin =
+              (await checkIsUserAdmin(session.user.id)) ||
+              session.user.email?.toLowerCase() === 'kpctech1234@gmail.com';
+
+            if (isUserAdmin) {
+              setIsAuthenticated(true);
+              setHasSupabaseSession(true);
+              setCurrentUserEmail(session.user.email || 'Admin');
+              setAuthError(null);
+            }
+          } else if (event === 'SIGNED_OUT') {
+            setIsAuthenticated(false);
+            setHasSupabaseSession(false);
+            setCurrentUserEmail('');
+          }
+        }
+      );
+      subscription = authListener?.subscription;
+    }
+
+    return () => {
+      if (subscription) subscription.unsubscribe();
+    };
+  }, [isDevBypass]);
 
   // Load all initial admin data
   const loadDashboardData = async () => {
@@ -166,8 +228,7 @@ export const AdminDashboard: React.FC = () => {
       if (data.session && data.user) {
         const isAuthorized =
           (await checkIsUserAdmin(data.user.id)) ||
-          data.user.email === 'kpctech1234@gmail.com' ||
-          isDevelopmentEnvironment;
+          data.user.email?.toLowerCase() === 'kpctech1234@gmail.com';
 
         if (!isAuthorized) {
           await supabase.auth.signOut();
@@ -177,6 +238,7 @@ export const AdminDashboard: React.FC = () => {
         }
 
         setIsAuthenticated(true);
+        setHasSupabaseSession(true);
         setCurrentUserEmail(data.user.email || 'Admin');
         setNotice({ type: 'success', message: `Welcome back, ${data.user.email}!` });
       }
@@ -197,6 +259,7 @@ export const AdminDashboard: React.FC = () => {
       }
     }
     setIsAuthenticated(false);
+    setHasSupabaseSession(false);
     setCurrentUserEmail('');
     setNotice({ type: 'success', message: 'You have been signed out safely.' });
   };
@@ -345,6 +408,18 @@ export const AdminDashboard: React.FC = () => {
       return;
     }
 
+    if (isSupabaseConfigured() && supabase) {
+      const token = await getActiveAccessToken();
+      if (!token || !isValidJwt(token)) {
+        setNotice({
+          type: 'error',
+          message:
+            'Authentication Required: You must sign in with your administrator account (kpctech1234@gmail.com) to upload videos to Supabase Storage.',
+        });
+        return;
+      }
+    }
+
     try {
       const { controller } = await uploadService.startTusVideoUpload(uploadVideoFile, {
         bucketName: 'portfolio-videos',
@@ -393,6 +468,18 @@ export const AdminDashboard: React.FC = () => {
       setNotice({ type: 'error', message: 'Failed to update inquiry status.' });
     }
   };
+
+  // While verifying session from storage
+  if (!hasCheckedSession) {
+    return (
+      <div className="min-h-screen bg-[#070709] flex items-center justify-center p-4">
+        <div className="flex items-center gap-3 text-neutral-400 text-xs font-mono">
+          <span className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <span>Verifying administrator session...</span>
+        </div>
+      </div>
+    );
+  }
 
   // If not authenticated, render dedicated Administrator Sign-In Screen
   if (!isAuthenticated) {
@@ -948,6 +1035,24 @@ export const AdminDashboard: React.FC = () => {
                 Upload 4K cinematic edits and masters safely using chunked TUS transfers to Supabase Storage with pause, resume, and real-time speed monitoring.
               </p>
             </div>
+
+            {!hasSupabaseSession && (
+              <div className="p-5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0" />
+                  <span className="leading-relaxed">
+                    <strong>Authentication Required for Video Uploads:</strong> You are currently viewing in local mock preview without an active Supabase Auth session. Real TUS video uploads to Supabase Storage require signing in with your administrator account (<code className="text-amber-300">kpctech1234@gmail.com</code>).
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-semibold text-xs whitespace-nowrap cursor-pointer transition-colors shrink-0"
+                >
+                  Sign In With Supabase
+                </button>
+              </div>
+            )}
 
             {/* Video File Drop Zone */}
             <div className="p-8 rounded-3xl bg-[#0f1017] border-2 border-dashed border-white/15 hover:border-indigo-500/50 transition-colors text-center relative group">

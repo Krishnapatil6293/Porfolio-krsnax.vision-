@@ -141,3 +141,21 @@ Complete these manual steps in order before announcing or directing traffic to y
    - `VITE_DEV_ADMIN_ENABLED=false`
 3. Click **Deploy**.
 4. Once deployed, open your live URL, navigate to `/admin`, log in with `kpctech1234@gmail.com`, and click **"Sync Showcase To Supabase"** to seed your database with your 6 showcase projects!
+
+---
+
+## 4. Bug Fix Verification: "403 Invalid Compact JWS" in TUS Resumable Upload
+
+### Root Cause
+1. `import.meta.env.DEV` was unconditionally initializing `isAuthenticated = true` in local development mode without requiring a Supabase Auth login.
+2. When the user attempted a TUS upload without signing into Supabase Auth, `supabase.auth.getSession()` returned `null`.
+3. `getActiveAccessToken()` fell back to `getSupabasePublishableKey()`, which is `sb_publishable_...`.
+4. `uploadService.ts` passed `Authorization: Bearer sb_publishable_...` to Supabase Storage.
+5. The Supabase Storage TUS server rejected this with `403 AccessDenied: Invalid Compact JWS` because an API key (`sb_publishable_...`) is not a valid compact JWS / JWT structure.
+
+### Resolution
+1. **Strict Session Enforcement**: Removed automatic dev bypass. The admin dashboard now checks for a valid Supabase Auth session on mount and requires authentication before allowing uploads.
+2. **Safe Token Getter**: `getActiveAccessToken()` in `src/lib/supabase.ts` now strictly verifies that the token is a valid compact JWS (`isValidJwt`) and auto-refreshes expiring tokens. It **never** returns the publishable key.
+3. **Pre-Flight Validation**: `uploadService.ts` checks token validity and administrator authorization before creating the TUS upload. If no session exists, it halts immediately with a clear error prompt to sign in.
+4. **Descriptive Error Mapping**: `onError` in `uploadService.ts` decodes Supabase 403, 413, RLS, and bucket errors into actionable steps.
+
