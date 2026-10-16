@@ -7,6 +7,7 @@ interface HeroProps {
   availability?: string;
   onExploreClick?: () => void;
   onCollaborateClick?: () => void;
+  onPlayHeroVideo?: () => void;
 }
 
 export const Hero: React.FC<HeroProps> = ({
@@ -15,6 +16,7 @@ export const Hero: React.FC<HeroProps> = ({
   availability = 'Available for select projects',
   onExploreClick,
   onCollaborateClick,
+  onPlayHeroVideo,
 }) => {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
@@ -80,11 +82,11 @@ export const Hero: React.FC<HeroProps> = ({
             <div className="pt-2 flex flex-wrap items-center gap-4">
               <button
                 type="button"
-                onClick={onExploreClick || (() => handleScrollTo('work'))}
+                onClick={onPlayHeroVideo || onExploreClick || (() => handleScrollTo('work'))}
                 className="group relative inline-flex items-center gap-3 px-7 py-3.5 rounded-full text-xs sm:text-sm font-semibold uppercase tracking-wider text-white bg-indigo-600 hover:bg-indigo-500 transition-all duration-300 shadow-lg shadow-indigo-600/25 hover:shadow-indigo-600/40 hover:-translate-y-0.5 cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-current transition-transform group-hover:scale-110" />
-                <span>Explore My Work</span>
+                <span>Watch Demo Reel</span>
               </button>
 
               <button
@@ -99,9 +101,9 @@ export const Hero: React.FC<HeroProps> = ({
             {/* Video Production Metadata Strip */}
             <div className="pt-8 border-t border-white/5 w-full grid grid-cols-3 gap-4 max-w-lg">
               <div>
-                <div className="text-xl sm:text-2xl font-bold font-display text-white">4K / 6K</div>
+                <div className="text-xl sm:text-2xl font-bold font-display text-white">4K / 1080p</div>
                 <div className="text-[11px] text-neutral-400 font-mono uppercase tracking-wider mt-0.5">
-                  ProRes Masters
+                  Master Renders
                 </div>
               </div>
               <div>
@@ -139,11 +141,14 @@ export const Hero: React.FC<HeroProps> = ({
                 </div>
               </div>
 
-              {/* Main Prominent Center Video Frame (Tokyo Noir) */}
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[92%] aspect-video rounded-2xl overflow-hidden border border-white/20 shadow-2xl z-20 group">
+              {/* Main Prominent Center Video Frame (AI Architecture & Luxury Estates) */}
+              <div
+                onClick={onPlayHeroVideo || onExploreClick || (() => handleScrollTo('work'))}
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[92%] aspect-video rounded-2xl overflow-hidden border border-white/20 shadow-2xl z-20 group cursor-pointer hover:border-indigo-400/50 transition-all duration-300"
+              >
                 <img
-                  src="/thumbnails/tokyo-noir.jpg"
-                  alt="Cinematic Tokyo Rain still"
+                  src="/thumbnails/ai-property-demo.jpg"
+                  alt="AI Architecture & Luxury Property Showcase"
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 filter contrast-105"
                 />
                 {/* Cinema Overlay Hud */}
@@ -153,25 +158,25 @@ export const Hero: React.FC<HeroProps> = ({
                 <div className="absolute top-3 left-3 right-3 flex items-center justify-between text-[10px] font-mono text-white/80 pointer-events-none">
                   <div className="flex items-center gap-1.5 bg-black/50 backdrop-blur-md px-2 py-1 rounded border border-white/10">
                     <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                    <span className="tracking-widest">REC</span>
+                    <span className="tracking-widest">MASTER</span>
                   </div>
                   <div className="bg-black/50 backdrop-blur-md px-2 py-1 rounded border border-white/10">
-                    00:01:24:18
+                    1080p FHD
                   </div>
                 </div>
 
                 {/* Bottom Bar Info */}
-                <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between">
+                <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between pointer-events-none">
                   <div>
                     <div className="text-[10px] uppercase font-mono tracking-wider text-indigo-400">
-                      Cinematic Short
+                      Featured Work
                     </div>
                     <div className="text-sm font-semibold text-white font-display">
-                      Tokyo Noir
+                      AI Luxury Architecture
                     </div>
                   </div>
-                  <div className="w-8 h-8 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center border border-white/30 text-white">
-                    <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
+                  <div className="w-9 h-9 rounded-full bg-indigo-600/90 group-hover:bg-indigo-500 backdrop-blur-md flex items-center justify-center border border-white/30 text-white shadow-lg transition-all group-hover:scale-110">
+                    <Play className="w-4 h-4 fill-current ml-0.5" />
                   </div>
                 </div>
               </div>

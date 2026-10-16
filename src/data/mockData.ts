@@ -2,6 +2,29 @@ import type { Project, SiteSettings, Inquiry } from '../types';
 
 export const INITIAL_PROJECTS: Project[] = [
   {
+    id: 'proj-000',
+    title: 'AI Architecture & Luxury Estates — Cinematic Showcase',
+    slug: 'ai-architecture-luxury-estates',
+    description: 'A visionary cinematic commercial showcasing modern architectural grandeur and high-end luxury property design. Crafted with fluid camera glides, pristine dynamic lighting balance, and resonant acoustic ambient sound design.',
+    category: 'Commercial and Brand Videos',
+    tags: ['Architecture', 'Real Estate', 'AI Visuals', 'Cinematic', 'Color Grading'],
+    client_name: 'AI Property & Architectural Design',
+    project_date: 'October 2026',
+    thumbnail_path: '/thumbnails/ai-property-demo.jpg',
+    original_video_path: 'portfolio-videos/demo-2.mp4',
+    playback_video_path: '/videos/demo-2.mp4',
+    video_duration_seconds: 5,
+    video_size_bytes: 46128886, // ~44 MB real 1080p master
+    is_featured: true,
+    is_published: true,
+    sort_order: 1,
+    role_description: 'Full commercial post-production, cadence calibration, high-bitrate master render engineering, and visual polish for luxury property presentation.',
+    tools_used: ['DaVinci Resolve Studio', 'Adobe Premiere Pro', 'Adobe After Effects'],
+    before_after_enabled: false,
+    created_at: '2026-10-17T00:00:00Z',
+    updated_at: '2026-10-17T00:00:00Z',
+  },
+  {
     id: 'proj-001',
     title: 'Tokyo Noir — Cinematic Short',
     slug: 'tokyo-noir-cinematic-short',
@@ -17,7 +40,7 @@ export const INITIAL_PROJECTS: Project[] = [
     video_size_bytes: 1476395008, // ~1.4 GB
     is_featured: true,
     is_published: true,
-    sort_order: 1,
+    sort_order: 2,
     role_description: 'Full post-production including assembly cut, pace calibration, ACES color grading in DaVinci Resolve Studio, and multi-track rain & ambient foley layering.',
     tools_used: ['DaVinci Resolve Studio', 'Adobe Premiere Pro', 'Dehancer Pro', 'iZotope RX 10'],
     before_after_enabled: true,
@@ -42,7 +65,7 @@ export const INITIAL_PROJECTS: Project[] = [
     video_size_bytes: 891289600, // ~850 MB
     is_featured: true,
     is_published: true,
-    sort_order: 2,
+    sort_order: 3,
     role_description: 'Lead commercial editor responsible for dynamic speed ramping, beat-synchronized pacing, audio sub-bass punch, and high-contrast night grade.',
     tools_used: ['Adobe Premiere Pro', 'Adobe After Effects', 'DaVinci Resolve Studio'],
     before_after_enabled: false,
@@ -65,7 +88,7 @@ export const INITIAL_PROJECTS: Project[] = [
     video_size_bytes: 335544320, // ~320 MB
     is_featured: true,
     is_published: true,
-    sort_order: 3,
+    sort_order: 4,
     role_description: 'Retention-first short-form editing, hook construction within first 1.5 seconds, beat synchronization, and dynamic framing adjustments.',
     tools_used: ['Adobe Premiere Pro', 'After Effects', 'CapCut Pro Desktop'],
     before_after_enabled: false,
@@ -88,7 +111,7 @@ export const INITIAL_PROJECTS: Project[] = [
     video_size_bytes: 1986560000, // ~1.85 GB
     is_featured: false,
     is_published: true,
-    sort_order: 4,
+    sort_order: 5,
     role_description: 'Documentary story editor, voiceover timing, archival audio restoration, naturalistic color grading matching varying cloud and blizzard conditions.',
     tools_used: ['DaVinci Resolve Studio', 'Fairlight Audio Suite', 'Premiere Pro'],
     before_after_enabled: false,
@@ -111,7 +134,7 @@ export const INITIAL_PROJECTS: Project[] = [
     video_size_bytes: 650117120, // ~620 MB
     is_featured: false,
     is_published: true,
-    sort_order: 5,
+    sort_order: 6,
     role_description: 'Title design compositing, motion tracking, chromatic split grading, and title cadence layout.',
     tools_used: ['After Effects', 'Cinema 4D', 'Premiere Pro'],
     before_after_enabled: false,
@@ -134,7 +157,7 @@ export const INITIAL_PROJECTS: Project[] = [
     video_size_bytes: 1181116000, // ~1.1 GB
     is_featured: false,
     is_published: true,
-    sort_order: 6,
+    sort_order: 7,
     role_description: 'Macro sequence editing, acoustic foley synchronization, high-frequency highlight preservation and metallic tone grading.',
     tools_used: ['DaVinci Resolve Studio', 'Adobe Premiere Pro', 'iZotope RX 10'],
     before_after_enabled: false,

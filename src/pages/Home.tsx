@@ -34,6 +34,11 @@ export const Home: React.FC = () => {
     fetchData();
   }, []);
 
+  const featuredProject =
+    projects.find((p) => p.slug === 'ai-architecture-luxury-estates') ||
+    projects[0] ||
+    null;
+
   return (
     <div className="min-h-screen bg-[#070709] text-neutral-200 selection:bg-indigo-600/30 selection:text-white">
       {/* Navigation */}
@@ -44,6 +49,7 @@ export const Home: React.FC = () => {
         headline={settings.headline}
         subheadline={settings.subheadline}
         availability={settings.availability_status}
+        onPlayHeroVideo={featuredProject ? () => setActiveModalProject(featuredProject) : undefined}
       />
 
       {/* Selected Work Gallery */}
