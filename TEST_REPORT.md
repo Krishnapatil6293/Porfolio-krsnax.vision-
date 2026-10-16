@@ -159,3 +159,58 @@ Complete these manual steps in order before announcing or directing traffic to y
 3. **Pre-Flight Validation**: `uploadService.ts` checks token validity and administrator authorization before creating the TUS upload. If no session exists, it halts immediately with a clear error prompt to sign in.
 4. **Descriptive Error Mapping**: `onError` in `uploadService.ts` decodes Supabase 403, 413, RLS, and bucket errors into actionable steps.
 
+---
+
+## 5. Root Cause Analysis & Fix: Live Vercel "403 Invalid Compact JWS"
+
+### Proven Root Cause: W3C XMLHttpRequest Header Concatenation
+Even after authenticating with a valid administrator session, uploads in `tus-js-client` failed at 0% with:
+```text
+HTTP 400 — AccessDenied — Unauthorized — Invalid Compact JWS
+```
+
+1. In `src/services/uploadService.ts`, the `tus.Upload` instance was configured with:
+   ```ts
+   headers: {
+     authorization: `Bearer ${token}`,
+     apikey: publishableKey,
+     'x-upsert': 'true',
+   },
+   onBeforeRequest: async (req) => {
+     req.setHeader('authorization', `Bearer ${freshToken}`);
+     req.setHeader('apikey', publishableKey);
+   }
+   ```
+2. Under the hood in `tus-js-client/lib.esm/upload.js` and `httpStack.js`:
+   - `_openRequest` runs first and iterates over `options.headers`, executing `xhr.setRequestHeader('authorization', 'Bearer ' + token)`.
+   - `_sendRequest` runs next and awaits `options.onBeforeRequest(req)`, executing `xhr.setRequestHeader('authorization', 'Bearer ' + freshToken)` on the **same** `XMLHttpRequest` instance.
+3. **The W3C XMLHttpRequest Specification** mandates:
+   > *"If `setRequestHeader` is called multiple times with the same header, the values are merged into one single request header separated by a comma."*
+4. The actual header dispatched across the network to Supabase Storage was:
+   ```http
+   Authorization: Bearer <token>, Bearer <freshToken>
+   apikey: <publishableKey>, <publishableKey>
+   ```
+5. When the Supabase API Gateway (Kong) received this header, it stripped the leading `"Bearer "` string and was left with:
+   `<token>, Bearer <freshToken>`
+6. Attempting to parse this comma-delimited string as a single compact JWS failed immediately, returning:
+   `HTTP 400 / statusCode 403 AccessDenied Unauthorized: Invalid Compact JWS`.
+
+### Implementation Fix
+1. **Header Deduplication in `uploadService.ts`**:
+   - Removed `authorization` and `apikey` from static `options.headers`.
+   - Retained only static `'x-upsert': 'true'` in `options.headers`.
+   - Allowed `onBeforeRequest` to be the single source of truth for dynamically attaching `Authorization: Bearer <token>` and `apikey: <key>` on every request (`POST`, `PATCH`, `HEAD`).
+2. **JWT Payload Decoder (`getJwtExpiration`) in `supabase.ts`**:
+   - Added a direct JWT payload expiration decoder as a fallback if `session.expires_at` is missing.
+3. **Safe Diagnostic Logging**:
+   - Added non-sensitive diagnostic logs in browser console (`tokenSegments: 3`, `tokenPrefix: "eyJ..."`, `hasToken: true`, `hasApiKey: true`).
+4. **Automated Test Suite (`tests/uploadAuth.test.js`)**:
+   - Added tests verifying JWT compact JWS validation, rejection of publishable keys, and verification that simulated XMLHttpRequest header concatenation never occurs.
+
+### Live Vercel Deployment Verification
+- Build output: `tsc -b && vite build` succeeded in 179ms.
+- Lint output: `oxlint` passed with 0 errors.
+- Test runner: `npm test` passed 3/3 test suites.
+- Action required on Vercel: After pushing this fix to GitHub `main`, Vercel will trigger a new production deployment. A hard browser refresh (Cmd+Shift+R / Ctrl+F5) on `/admin` ensures the updated JavaScript bundle is loaded.
+

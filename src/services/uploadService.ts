@@ -148,26 +148,59 @@ export const uploadService = {
 
       const endpoint = `${supabaseUrl}/storage/v1/upload/resumable`;
 
+      if (typeof window !== 'undefined') {
+        // Safe diagnostic logging (no sensitive secrets or full tokens logged)
+        console.info('[TUS Pre-flight] Validated administrator auth session:', {
+          hasActiveToken: Boolean(token),
+          isCompactJwsValid: isValidJwt(token),
+          tokenSegments: token ? token.split('.').length : 0,
+          tokenPrefix: token ? token.substring(0, 10) + '...' : 'none',
+          userId: authUser.id,
+          userEmail: authUser.email,
+          isAdmin,
+          endpoint,
+        });
+      }
+
       const upload = new tus.Upload(file, {
         endpoint,
         retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
         chunkSize: CHUNK_SIZE_6MB,
+        // CRITICAL: Do NOT set authorization or apikey here. In browser XMLHttpRequest,
+        // setting headers in options.headers AND onBeforeRequest causes xhr.setRequestHeader
+        // to concatenate values into "Bearer <token>, Bearer <freshToken>", which causes
+        // Supabase Kong gateway to fail with "403 Invalid Compact JWS".
+        // Instead, onBeforeRequest exclusively sets the headers once per request.
         headers: {
-          authorization: `Bearer ${token}`,
-          apikey: publishableKey,
           'x-upsert': 'true',
         },
         onBeforeRequest: async (req) => {
           try {
-            const freshToken = await getActiveAccessToken();
+            const freshToken = (await getActiveAccessToken()) || token;
             if (freshToken && isValidJwt(freshToken)) {
               req.setHeader('authorization', `Bearer ${freshToken}`);
             } else {
-              console.warn('Session token could not be refreshed during chunk upload');
+              console.warn('[TUS] Session token could not be refreshed during chunk upload');
             }
             req.setHeader('apikey', publishableKey);
+
+            if (typeof window !== 'undefined') {
+              console.info('[TUS onBeforeRequest] Dispatched request with single verified Bearer header:', {
+                method: req.getMethod(),
+                url: req.getURL(),
+                hasToken: Boolean(freshToken),
+                isTokenValid: isValidJwt(freshToken),
+                tokenPrefix: freshToken ? freshToken.substring(0, 10) + '...' : 'none',
+                tokenSegments: freshToken ? freshToken.split('.').length : 0,
+                hasApiKey: Boolean(publishableKey),
+              });
+            }
           } catch (e) {
-            console.warn('Failed to refresh token before TUS chunk request:', e);
+            console.warn('[TUS] Failed to attach auth headers before TUS request:', e);
+            if (token && isValidJwt(token)) {
+              req.setHeader('authorization', `Bearer ${token}`);
+              req.setHeader('apikey', publishableKey);
+            }
           }
         },
         uploadDataDuringCreation: true,

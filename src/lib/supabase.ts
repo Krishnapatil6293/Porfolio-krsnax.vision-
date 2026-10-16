@@ -43,6 +43,22 @@ export const isValidJwt = (token: string | null | undefined): boolean => {
 };
 
 /**
+ * Extracts expiration timestamp (seconds) from JWT payload if available.
+ */
+export const getJwtExpiration = (token: string | null | undefined): number | null => {
+  if (!isValidJwt(token) || typeof window === 'undefined') return null;
+  try {
+    const parts = (token || '').split('.');
+    if (parts.length !== 3) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = JSON.parse(window.atob(base64));
+    return typeof json.exp === 'number' ? json.exp : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Retrieves a valid, verified JWT access token for the authenticated administrator.
  * Automatically attempts to refresh the session if expired.
  * Returns null if no valid authenticated user session exists.
@@ -55,13 +71,16 @@ export const getActiveAccessToken = async (): Promise<string | null> => {
     
     if (session?.access_token && isValidJwt(session.access_token)) {
       // Check if token is expired or expiring in next 60 seconds
-      const expiresAt = session.expires_at; // unix timestamp in seconds
+      const expiresAt = session.expires_at || getJwtExpiration(session.access_token);
       const now = Math.floor(Date.now() / 1000);
       if (expiresAt && expiresAt - now < 60) {
         // Token is expired or expiring soon, refresh it
-        const { data: refreshData } = await supabase.auth.refreshSession();
+        const { data: refreshData, error: refreshErr } = await supabase.auth.refreshSession();
         if (refreshData?.session?.access_token && isValidJwt(refreshData.session.access_token)) {
           return refreshData.session.access_token;
+        }
+        if (refreshErr) {
+          console.warn('[Supabase Auth] Session refresh warning:', refreshErr.message);
         }
       }
       return session.access_token;
