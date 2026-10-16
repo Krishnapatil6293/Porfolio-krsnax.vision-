@@ -4,7 +4,7 @@ import { projectsService } from '../../services/projectsService';
 import { siteSettingsService } from '../../services/siteSettingsService';
 import { inquiriesService } from '../../services/inquiriesService';
 import { uploadService, formatBytes } from '../../services/uploadService';
-import { isSupabaseConfigured, supabase } from '../../lib/supabase';
+import { isSupabaseConfigured, supabase, checkIsUserAdmin } from '../../lib/supabase';
 import type { Project, SiteSettings, Inquiry, UploadState, ProjectCategory } from '../../types';
 import {
   Film,
@@ -27,6 +27,8 @@ import {
   Lock,
   Save,
   HardDrive,
+  LogOut,
+  Database,
 } from 'lucide-react';
 
 const CATEGORIES: ProjectCategory[] = [
@@ -40,14 +42,17 @@ const CATEGORIES: ProjectCategory[] = [
 ];
 
 export const AdminDashboard: React.FC = () => {
-  // Check development mode authorization flag
   const isDevelopmentEnvironment =
     import.meta.env.DEV || import.meta.env.VITE_DEV_ADMIN_ENABLED === 'true';
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(isDevelopmentEnvironment);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>(
+    isDevelopmentEnvironment ? 'kpctech1234@gmail.com (Dev Admin)' : ''
+  );
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   // Tabs
   const [activeTab, setActiveTab] = useState<'overview' | 'projects' | 'upload' | 'settings' | 'inquiries'>('overview');
@@ -57,6 +62,7 @@ export const AdminDashboard: React.FC = () => {
   const [settings, setSettings] = useState<SiteSettings | null>(null);
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
   // Projects filter & search
   const [searchQuery, setSearchQuery] = useState('');
@@ -68,6 +74,7 @@ export const AdminDashboard: React.FC = () => {
 
   // Upload Form State
   const [uploadVideoFile, setUploadVideoFile] = useState<File | null>(null);
+  const [uploadPosterFile, setUploadPosterFile] = useState<File | null>(null);
   const [posterPreview, setPosterPreview] = useState<string | null>(null);
   const [uploadForm, setUploadForm] = useState({
     title: '',
@@ -92,6 +99,27 @@ export const AdminDashboard: React.FC = () => {
     estimatedTimeRemaining: '0s',
   });
   const uploadControllerRef = useRef<any>(null);
+
+  // Check active session on initial load
+  useEffect(() => {
+    const checkActiveSession = async () => {
+      if (supabase) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            const isUserAdmin = await checkIsUserAdmin(session.user.id);
+            if (isUserAdmin || isDevelopmentEnvironment || session.user.email === 'kpctech1234@gmail.com') {
+              setIsAuthenticated(true);
+              setCurrentUserEmail(session.user.email || 'Admin');
+            }
+          }
+        } catch (err) {
+          console.warn('Session check error:', err);
+        }
+      }
+    };
+    checkActiveSession();
+  }, [isDevelopmentEnvironment]);
 
   // Load all initial admin data
   const loadDashboardData = async () => {
@@ -119,21 +147,77 @@ export const AdminDashboard: React.FC = () => {
   const handleProductionLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setIsLoggingIn(true);
+
     if (!isSupabaseConfigured() || !supabase) {
-      setAuthError('Supabase is not configured yet. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env file.');
+      setAuthError('Supabase is not configured yet. Verify VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY in .env.local.');
+      setIsLoggingIn(false);
       return;
     }
+
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: authEmail,
+        email: authEmail.trim(),
         password: authPassword,
       });
+
       if (error) throw error;
-      if (data.session) {
+
+      if (data.session && data.user) {
+        const isAuthorized =
+          (await checkIsUserAdmin(data.user.id)) ||
+          data.user.email === 'kpctech1234@gmail.com' ||
+          isDevelopmentEnvironment;
+
+        if (!isAuthorized) {
+          await supabase.auth.signOut();
+          setAuthError('Access Denied: Your account is authenticated, but has not been granted administrator permissions in the admin_users table.');
+          setIsLoggingIn(false);
+          return;
+        }
+
         setIsAuthenticated(true);
+        setCurrentUserEmail(data.user.email || 'Admin');
+        setNotice({ type: 'success', message: `Welcome back, ${data.user.email}!` });
       }
     } catch (err: any) {
-      setAuthError(err.message || 'Authentication failed. Please check credentials.');
+      setAuthError(err.message || 'Authentication failed. Please check credentials or create user in Supabase.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // Sign out
+  const handleSignOut = async () => {
+    if (supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch (e) {
+        console.warn('Sign out error:', e);
+      }
+    }
+    setIsAuthenticated(false);
+    setCurrentUserEmail('');
+    setNotice({ type: 'success', message: 'You have been signed out safely.' });
+  };
+
+  // Sync showcase data directly to live Supabase
+  const handleSyncShowcase = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await projectsService.syncShowcaseToSupabase();
+      setNotice({
+        type: 'success',
+        message: `Successfully synchronized ${res.count} showcase projects to your live Supabase database!`,
+      });
+      await loadDashboardData();
+    } catch (err: any) {
+      setNotice({
+        type: 'error',
+        message: `Sync failed: ${err.message || 'Make sure the Supabase SQL migration has been executed in your SQL editor.'}`,
+      });
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -166,7 +250,7 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Handle File Selection for Upload
+  // Handle Video Selection
   const handleVideoSelect = (file: File) => {
     setUploadVideoFile(file);
     if (!uploadForm.title) {
@@ -178,69 +262,92 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  // Handle Poster Selection
   const handlePosterSelect = (file: File) => {
+    setUploadPosterFile(file);
     const url = URL.createObjectURL(file);
     setPosterPreview(url);
   };
 
   // Start Resumable Upload
-  const handleStartUpload = () => {
+  const handleStartUpload = async () => {
     if (!uploadVideoFile) {
       setNotice({ type: 'error', message: 'Please select a video file (MP4/MOV up to 2 GB) to upload.' });
       return;
     }
 
-    const { controller } = uploadService.startTusVideoUpload(uploadVideoFile, {
-      bucketName: 'portfolio-videos',
-      onStateChange: async (state) => {
-        setUploadState(state);
+    try {
+      const { controller } = await uploadService.startTusVideoUpload(uploadVideoFile, {
+        bucketName: 'portfolio-videos',
+        onStateChange: async (state) => {
+          setUploadState(state);
 
-        // Upload completed! Now save to database
-        if (state.status === 'completed') {
-          try {
-            const tagsArray = uploadForm.tags
-              .split(',')
-              .map((t) => t.trim())
-              .filter(Boolean);
-            const toolsArray = uploadForm.tools_used
-              .split(',')
-              .map((t) => t.trim())
-              .filter(Boolean);
+          // Upload completed! Now save to database
+          if (state.status === 'completed') {
+            try {
+              let finalThumbnailPath = posterPreview || '/thumbnails/tokyo-noir.jpg';
 
-            const newProj = await projectsService.createProject({
-              title: uploadForm.title || uploadVideoFile.name,
-              description: uploadForm.description || 'Cinematic video edit produced by Krishna Patil.',
-              category: uploadForm.category,
-              tags: tagsArray,
-              client_name: uploadForm.client_name || null,
-              project_date: uploadForm.project_date || 'October 2026',
-              thumbnail_path: posterPreview || '/thumbnails/tokyo-noir.jpg',
-              original_video_path: state.storagePath || `portfolio-videos/${uploadVideoFile.name}`,
-              playback_video_path: state.publicUrl || null,
-              video_duration_seconds: Number(uploadForm.video_duration_seconds) || 60,
-              video_size_bytes: uploadVideoFile.size,
-              is_featured: uploadForm.is_featured,
-              is_published: uploadForm.is_published,
-              role_description: uploadForm.role_description,
-              tools_used: toolsArray,
-            });
+              // If a custom poster image was chosen, upload to portfolio-thumbnails bucket
+              if (uploadPosterFile) {
+                try {
+                  const thumbRes = await uploadService.uploadThumbnailImage(uploadPosterFile);
+                  finalThumbnailPath = thumbRes.publicUrl;
+                } catch (thumbErr) {
+                  console.warn('Thumbnail upload to Supabase storage failed, using preview URL:', thumbErr);
+                }
+              }
 
-            setProjects((prev) => [newProj, ...prev]);
-            setNotice({
-              type: 'success',
-              message: `Upload complete! Project "${newProj.title}" created successfully.`,
-            });
-            // Reset upload form
-            setUploadVideoFile(null);
-            setPosterPreview(null);
-          } catch (err: any) {
-            setNotice({ type: 'error', message: `Upload succeeded, but metadata save failed: ${err.message}` });
+              const tagsArray = uploadForm.tags
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean);
+              const toolsArray = uploadForm.tools_used
+                .split(',')
+                .map((t) => t.trim())
+                .filter(Boolean);
+
+              const newProj = await projectsService.createProject({
+                title: uploadForm.title || uploadVideoFile.name,
+                description: uploadForm.description || 'Cinematic video edit produced by Krishna Patil.',
+                category: uploadForm.category,
+                tags: tagsArray,
+                client_name: uploadForm.client_name || null,
+                project_date: uploadForm.project_date || 'October 2026',
+                thumbnail_path: finalThumbnailPath,
+                original_video_path: state.storagePath || `portfolio-videos/${uploadVideoFile.name}`,
+                playback_video_path: state.publicUrl || null,
+                video_duration_seconds: Number(uploadForm.video_duration_seconds) || 60,
+                video_size_bytes: uploadVideoFile.size,
+                is_featured: uploadForm.is_featured,
+                is_published: uploadForm.is_published,
+                role_description: uploadForm.role_description,
+                tools_used: toolsArray,
+              });
+
+              setProjects((prev) => [newProj, ...prev]);
+              setNotice({
+                type: 'success',
+                message: `Upload complete! Project "${newProj.title}" stored in Supabase.`,
+              });
+
+              // Reset upload form
+              setUploadVideoFile(null);
+              setUploadPosterFile(null);
+              setPosterPreview(null);
+            } catch (err: any) {
+              setNotice({
+                type: 'error',
+                message: `Video uploaded to Supabase Storage, but metadata write failed: ${err.message}. Ensure RLS is configured.`,
+              });
+            }
           }
-        }
-      },
-    });
+        },
+      });
 
-    uploadControllerRef.current = controller;
+      uploadControllerRef.current = controller;
+    } catch (err: any) {
+      setNotice({ type: 'error', message: `Failed to initiate TUS upload: ${err.message}` });
+    }
   };
 
   // Save Settings
@@ -250,7 +357,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       const updated = await siteSettingsService.updateSettings(settings);
       setSettings(updated);
-      setNotice({ type: 'success', message: 'Profile settings saved successfully!' });
+      setNotice({ type: 'success', message: 'Profile settings saved successfully to Supabase!' });
     } catch (err: any) {
       setNotice({ type: 'error', message: err.message || 'Failed to update settings.' });
     }
@@ -265,15 +372,16 @@ export const AdminDashboard: React.FC = () => {
       );
       setNotice({ type: 'success', message: `Inquiry marked as ${status}.` });
     } catch (err: any) {
+      console.error('Failed to update inquiry status', err);
       setNotice({ type: 'error', message: 'Failed to update inquiry status.' });
     }
   };
 
-  // If in production and not authenticated, render strict login screen
+  // If not authenticated, render dedicated Administrator Sign-In Screen
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-[#08080a] flex items-center justify-center p-4">
-        <div className="w-full max-w-md p-8 rounded-3xl bg-[#0f1017] border border-white/10 shadow-2xl">
+      <div className="min-h-screen bg-[#070709] flex items-center justify-center p-4">
+        <div className="w-full max-w-md p-8 rounded-3xl bg-[#0f1017] border border-white/10 shadow-2xl relative overflow-hidden">
           <div className="flex items-center gap-3 mb-6">
             <div className="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
               <Lock className="w-5 h-5" />
@@ -284,13 +392,13 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
 
-          <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 space-y-1">
-            <div className="font-semibold flex items-center gap-1.5">
-              <ShieldAlert className="w-4 h-4 text-amber-400" />
-              <span>Production Security Mode Active</span>
+          <div className="mb-6 p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-xs text-indigo-200 space-y-1">
+            <div className="font-semibold flex items-center gap-1.5 text-indigo-300">
+              <ShieldAlert className="w-4 h-4 text-indigo-400" />
+              <span>Supabase Production Security</span>
             </div>
-            <p>
-              Anonymous development bypass is disabled. Please authenticate with your authorized Supabase administrator account to manage projects.
+            <p className="text-[11px] leading-relaxed text-neutral-300">
+              Protected by Supabase Authentication and PostgreSQL Row Level Security. Only authorized administrators can manage projects and view client briefs.
             </p>
           </div>
 
@@ -331,9 +439,17 @@ export const AdminDashboard: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold uppercase tracking-wider transition-colors shadow-lg shadow-indigo-600/30 cursor-pointer"
+              disabled={isLoggingIn}
+              className="w-full py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold uppercase tracking-wider transition-colors shadow-lg shadow-indigo-600/30 cursor-pointer flex items-center justify-center gap-2"
             >
-              Sign In To Studio Admin
+              {isLoggingIn ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>Verifying Credentials...</span>
+                </>
+              ) : (
+                <span>Sign In To Studio Admin</span>
+              )}
             </button>
           </form>
 
@@ -349,19 +465,19 @@ export const AdminDashboard: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#070709] text-neutral-200">
-      {/* Top Banner for Development Mode status */}
+      {/* Top Banner for Supabase connection & Auth status */}
       <div className="bg-indigo-950/40 border-b border-indigo-500/20 px-5 py-2 text-[11px] font-mono text-indigo-300 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           <span>
-            {isDevelopmentEnvironment
-              ? 'LOCAL DEVELOPMENT MODE: Direct testing enabled. Production build fails closed to Supabase Auth.'
-              : 'AUTHENTICATED SESSION: Supabase Administrator'}
+            {currentUserEmail
+              ? `AUTHENTICATED: ${currentUserEmail}`
+              : 'LOCAL DEVELOPMENT MODE'}
           </span>
         </div>
         <div className="flex items-center gap-4">
           <span className="text-neutral-400">
-            Supabase Status: {isSupabaseConfigured() ? 'Connected' : 'Offline / Local State Mode'}
+            Backend: {isSupabaseConfigured() ? 'Connected (khaixytdbwmtrtfkfunp)' : 'Local Mode'}
           </span>
           <Link to="/" className="text-white hover:text-indigo-300 flex items-center gap-1">
             <span>View Site</span>
@@ -431,6 +547,16 @@ export const AdminDashboard: React.FC = () => {
                   {inquiries.filter((i) => i.status === 'new').length}
                 </span>
               )}
+            </button>
+
+            {/* Sign Out Button */}
+            <button
+              onClick={handleSignOut}
+              className="ml-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/20 transition-colors flex items-center gap-1"
+              title="Sign Out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Sign Out</span>
             </button>
           </div>
         </div>
@@ -532,13 +658,24 @@ export const AdminDashboard: React.FC = () => {
                   <h2 className="text-lg font-bold font-display text-white">
                     Recent Portfolio Projects
                   </h2>
-                  <button
-                    onClick={() => setActiveTab('upload')}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Upload New Video</span>
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleSyncShowcase}
+                      disabled={isSyncing}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 transition-colors"
+                      title="Insert initial showcase projects into Supabase"
+                    >
+                      <Database className="w-3.5 h-3.5" />
+                      <span>{isSyncing ? 'Syncing...' : 'Sync Showcase To Supabase'}</span>
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('upload')}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Upload New Video</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="divide-y divide-white/5">
@@ -592,7 +729,7 @@ export const AdminDashboard: React.FC = () => {
                   Resumable TUS Engine
                 </h3>
                 <p className="text-xs text-neutral-400 leading-relaxed">
-                  The portfolio uses <strong className="text-white">tus-js-client</strong> configured with standard <strong className="text-white">6 MiB chunk sizes</strong>. Video uploads can safely pause, resume, and survive network disconnects.
+                  The portfolio uses <strong className="text-white">tus-js-client</strong> connected to your live Supabase endpoint with standard <strong className="text-white">6 MiB chunk sizes</strong>.
                 </p>
 
                 <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 space-y-2 text-xs font-mono text-neutral-300">
@@ -601,18 +738,22 @@ export const AdminDashboard: React.FC = () => {
                     <span>6 MiB (6,291,456 B)</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-neutral-500">Max Config Limit</span>
-                    <span>5 GB (Pro Tier)</span>
+                    <span className="text-neutral-500">Storage Endpoint</span>
+                    <span className="text-indigo-400 truncate max-w-[150px]">khaixytdbwmtrtfkfunp</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-neutral-500">Free Tier Limit</span>
                     <span className="text-amber-400">50 MB max</span>
                   </div>
+                  <div className="flex justify-between">
+                    <span className="text-neutral-500">Pro Tier Limit</span>
+                    <span className="text-emerald-400">5 GB max</span>
+                  </div>
                 </div>
 
                 <button
                   onClick={() => setActiveTab('upload')}
-                  className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold uppercase tracking-wider transition-colors"
+                  className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold uppercase tracking-wider transition-colors cursor-pointer"
                 >
                   Go To Upload Studio
                 </button>
@@ -652,7 +793,16 @@ export const AdminDashboard: React.FC = () => {
                 </select>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleSyncShowcase}
+                  disabled={isSyncing}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-400 hover:text-emerald-300 px-3.5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 transition-colors"
+                >
+                  <Database className="w-4 h-4" />
+                  <span>{isSyncing ? 'Syncing...' : 'Sync Showcase To Supabase'}</span>
+                </button>
+
                 <button
                   onClick={() => setActiveTab('upload')}
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold uppercase tracking-wider transition-colors"
@@ -778,7 +928,7 @@ export const AdminDashboard: React.FC = () => {
                 Resumable 1–2 GB Video Upload Studio
               </h2>
               <p className="text-xs sm:text-sm text-neutral-400 mt-1">
-                Upload 4K cinematic edits and masters safely using chunked TUS transfers with pause, resume, and real-time speed monitoring.
+                Upload 4K cinematic edits and masters safely using chunked TUS transfers to Supabase Storage with pause, resume, and real-time speed monitoring.
               </p>
             </div>
 
@@ -812,7 +962,7 @@ export const AdminDashboard: React.FC = () => {
                       Drag and drop master video file here, or click to browse
                     </div>
                     <div className="text-xs text-neutral-400 mt-1">
-                      Supports ProRes MOV, MP4, WebM up to 2 GB (6 MiB chunking)
+                      Supports ProRes MOV, MP4, WebM up to 2 GB (6 MiB chunking to Supabase Storage)
                     </div>
                   </div>
                 )}
@@ -863,7 +1013,7 @@ export const AdminDashboard: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => uploadControllerRef.current?.pause()}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-white transition-colors"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-white transition-colors cursor-pointer"
                     >
                       <Pause className="w-3.5 h-3.5" />
                       <span>Pause Transfer</span>
@@ -874,7 +1024,7 @@ export const AdminDashboard: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => uploadControllerRef.current?.resume()}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition-colors"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition-colors cursor-pointer"
                     >
                       <Play className="w-3.5 h-3.5 fill-current" />
                       <span>Resume Transfer</span>
@@ -885,7 +1035,7 @@ export const AdminDashboard: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => uploadControllerRef.current?.abort()}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-xs font-semibold text-red-300 border border-red-500/20 transition-colors"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-xs font-semibold text-red-300 border border-red-500/20 transition-colors cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       <span>Cancel Upload</span>
@@ -1031,7 +1181,7 @@ export const AdminDashboard: React.FC = () => {
               {/* Poster Image File Picker */}
               <div>
                 <label className="block text-xs font-mono uppercase tracking-wider text-neutral-400 mb-2">
-                  Thumbnail / Poster Image
+                  Thumbnail / Poster Image (Saved to Supabase Storage)
                 </label>
                 <div className="flex items-center gap-4">
                   <input
@@ -1042,7 +1192,7 @@ export const AdminDashboard: React.FC = () => {
                         handlePosterSelect(e.target.files[0]);
                       }
                     }}
-                    className="text-xs text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-white/10 file:text-white hover:file:bg-white/20"
+                    className="text-xs text-neutral-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-white/10 file:text-white hover:file:bg-white/20 cursor-pointer"
                   />
                   {posterPreview && (
                     <img
@@ -1086,7 +1236,7 @@ export const AdminDashboard: React.FC = () => {
               >
                 <UploadCloud className="w-5 h-5" />
                 <span>
-                  {uploadState.status === 'uploading' ? 'Upload In Progress...' : 'Start Resumable TUS Upload & Save'}
+                  {uploadState.status === 'uploading' ? 'Upload In Progress...' : 'Start Resumable TUS Upload & Save To Supabase'}
                 </span>
               </button>
             </div>
@@ -1101,7 +1251,7 @@ export const AdminDashboard: React.FC = () => {
                 Site Profile & Brand Settings
               </h2>
               <p className="text-xs sm:text-sm text-neutral-400 mt-1">
-                Update your biography, editing philosophy, portrait photo, and verified contact details.
+                Update your biography, editing philosophy, portrait photo, and verified contact details in Supabase.
               </p>
             </div>
 
@@ -1124,7 +1274,7 @@ export const AdminDashboard: React.FC = () => {
                     className="w-full px-4 py-2.5 rounded-xl bg-[#08080a] border border-white/10 text-white text-xs focus:outline-none focus:border-indigo-500"
                   />
                   <div className="text-[10px] text-neutral-500">
-                    Default is <code className="text-neutral-400">/krishna-patil.jpg</code> (real portrait).
+                    Current photo is <code className="text-neutral-400">/krishna-patil.jpg</code>.
                   </div>
                 </div>
               </div>
@@ -1240,7 +1390,7 @@ export const AdminDashboard: React.FC = () => {
                 className="w-full py-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold uppercase tracking-wider transition-colors shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Save className="w-4 h-4" />
-                <span>Save Profile Settings</span>
+                <span>Save Profile Settings To Supabase</span>
               </button>
             </form>
           </div>
@@ -1360,7 +1510,7 @@ export const AdminDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={confirmDeleteProject}
-                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-semibold uppercase tracking-wider"
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-semibold uppercase tracking-wider cursor-pointer"
               >
                 Yes, Delete
               </button>
@@ -1481,7 +1631,7 @@ export const AdminDashboard: React.FC = () => {
                     setNotice({ type: 'error', message: err.message || 'Update failed' });
                   }
                 }}
-                className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold uppercase tracking-wider"
+                className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold uppercase tracking-wider cursor-pointer"
               >
                 Save Changes
               </button>

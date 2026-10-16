@@ -1,32 +1,67 @@
-# DEPLOYMENT GUIDE — KRISHNA PATIL PORTFOLIO
+# VERCEL DEPLOYMENT & PRODUCTION RUNBOOK — KRISHNA PATIL PORTFOLIO
 
-This guide explains how to deploy the portfolio to production on Vercel, enforce production administrator authentication, and optimize video streaming delivery.
+This guide provides instructions for deploying your video editor portfolio to **Vercel**, configuring production environment variables, securing the Supabase Auth callback URLs, and delivering high-bitrate video assets at scale.
 
 ---
 
-## 1. Deploying to Vercel
+## 1. Deploying to Vercel (Step-by-Step)
 
-### Step 1: Connect Git Repository
-1. Push your repository to GitHub, GitLab, or Bitbucket.
-2. In the [Vercel Dashboard](https://vercel.com/dashboard), click **"Add New Project"** and select your repository.
+### Step 1: Import GitHub Repository to Vercel
+1. Log into your [Vercel Dashboard](https://vercel.com/dashboard).
+2. Click **"Add New..."** -> **"Project"**.
+3. Under **"Import Git Repository"**, select your GitHub repository:
+   - **Repository**: `Krishnapatil6293/Porfolio-krsnax.vision-`
+4. Click **"Import"**.
 
-### Step 2: Configure Project Settings
-- **Framework Preset**: Vite
+### Step 2: Configure Project & Build Settings
+Vercel automatically detects Vite. Confirm the following settings:
+- **Framework Preset**: `Vite`
+- **Root Directory**: `./`
 - **Build Command**: `npm run build`
 - **Output Directory**: `dist`
 - **Install Command**: `npm install`
 
-### Step 3: Configure Environment Variables
-In the Vercel project settings under **Environment Variables**, add:
+### Step 3: Configure Environment Variables in Vercel
+Before clicking **Deploy**, expand the **Environment Variables** section and add the following three variables for `Production`, `Preview`, and `Development`:
 
-| Variable | Value | Description |
+| Variable Name | Value | Purpose |
 |---|---|---|
-| `VITE_SUPABASE_URL` | `https://<your-ref>.supabase.co` | Your Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | `eyJhbGciOi...` | Supabase publishable anonymous key |
+| `VITE_SUPABASE_URL` | `https://khaixytdbwmtrtfkfunp.supabase.co` | Live Supabase project endpoint |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_Q7a2cXVNY0UcwjW6T42nVQ_VD6twbzV` | Official Supabase publishable key |
 | `VITE_DEV_ADMIN_ENABLED` | `false` | **CRITICAL**: Enforces strict Supabase Auth login |
 
-### Step 4: Single Page Application (SPA) Routing Configuration
-Ensure `vercel.json` exists in the repository root to route all requests (`/work/:slug`, `/admin`) to `index.html`:
+> [!CAUTION]
+> Ensure `VITE_DEV_ADMIN_ENABLED` is set to `false` in Vercel. Setting this to `false` guarantees that visitors navigating to `/admin` are presented with the secure login screen and that unauthenticated users cannot access management tools.
+
+### Step 4: Click "Deploy"
+1. Click **Deploy**. Vercel will install dependencies, execute `tsc -b && vite build`, and publish your website globally across its Edge Network.
+2. Once the build completes, Vercel will assign your deployment a URL (e.g., `https://porfolio-krsnax-vision.vercel.app`).
+
+---
+
+## 2. Supabase Auth Configuration for Vercel
+
+To ensure Supabase Auth redirects work reliably on your production domain:
+
+1. Open your [Supabase Dashboard](https://supabase.com/dashboard/project/khaixytdbwmtrtfkfunp).
+2. Navigate to **Authentication** -> **URL Configuration**.
+3. Set **Site URL** to your Vercel production domain:
+   ```
+   https://your-portfolio-domain.vercel.app
+   ```
+4. In **Redirect URLs**, add:
+   ```
+   https://your-portfolio-domain.vercel.app/**
+   https://*.vercel.app/**
+   http://localhost:5173/**
+   ```
+5. Click **Save**.
+
+---
+
+## 3. SPA Routing & Deep Links (`vercel.json`)
+
+Your repository includes a pre-configured `vercel.json` file in the root directory:
 ```json
 {
   "rewrites": [
@@ -37,45 +72,37 @@ Ensure `vercel.json` exists in the repository root to route all requests (`/work
   ]
 }
 ```
+This rewrite rule ensures that direct visits or browser refreshes on routes such as `/work/tokyo-noir` or `/admin` are resolved to the Single Page Application router without returning `404 Not Found`.
 
 ---
 
-## 2. Production Administrator Authentication
+## 4. Production Video Delivery & CDN Strategy
 
-### Creating Your Administrator Account
-1. Go to your **Supabase Dashboard** -> **Authentication** -> **Users**.
-2. Click **"Add user"** -> **"Create user"**.
-3. Enter your email (`kpctech1234@gmail.com`) and choose a strong password.
-4. Set **"Auto Confirm User?"** to `true`.
+### How Video Delivery Operates:
+1. **Gallery Experience**:
+   - Project cards in the portfolio gallery use WebP/JPEG thumbnail posters.
+   - Video elements use `preload="none"`, meaning zero video data is loaded when visitors browse the gallery.
+2. **On-Demand Streaming**:
+   - When a visitor clicks a video card, the player modal loads the specific video stream on demand.
+3. **Master File vs. Streaming Renditions**:
+   - The application separates `original_video_path` (your uncompressed 1–2 GB master stored in `portfolio-videos`) from `playback_video_path` (the web-optimized streaming version).
+   - In the Studio Admin, you can provide an optimized playback URL directly.
 
-### How Production Security Works
-- When `VITE_DEV_ADMIN_ENABLED` is `false` (or when running on a live production domain):
-  - Access to `/admin` requires an active Supabase session.
-  - Visitors navigating to `/admin` are presented with the secure Studio Administrator login screen.
-  - Anonymous visitors cannot read inquiries or modify projects.
-  - Supabase Row Level Security (RLS) guarantees that even if a visitor inspects network requests, mutations are rejected at the database layer.
+### Recommended Video CDNs for High Visitor Volume:
+If your portfolio experiences thousands of concurrent video plays, hosting 1–2 GB master files directly on Supabase Storage can consume egress bandwidth. You can connect:
+- **Cloudflare Stream**: Upload master files for automatic adaptive-bitrate HLS streaming (~$5/mo).
+- **Bunny.net Stream**: Global CDN with ultra-low egress ($0.005/GB).
+- **Mux Video**: Instant video encoding and streaming.
+
+Simply paste the streaming URL (HLS `.m3u8` or MP4 CDN link) into the **Playback Video URL** field when saving or editing a project in `/admin`.
 
 ---
 
-## 3. High-Performance Video Delivery Architecture
+## 5. Security & Pre-Launch Checklist
 
-### The Problem with Direct 2 GB Master Playback
-- Master video files (such as Apple ProRes 422 HQ or uncompressed 4K exports) can be 1–2 GB in size.
-- Direct web streaming of a 2 GB file will cause:
-  - Heavy buffering on mobile networks
-  - Massive browser bandwidth consumption
-  - Rapid exhaustion of Supabase egress bandwidth limits
-
-### The Multi-Tier Delivery Solution
-1. **Original Asset Preservation**:
-   - The original 1–2 GB file is stored in `portfolio-videos` as the source master.
-   - Preserved in PostgreSQL under `original_video_path`.
-2. **Web-Ready Presentation**:
-   - The web gallery cards use lightweight WebP/JPEG thumbnails with `preload="none"`.
-   - Video media containers are **never** loaded until the visitor explicitly clicks to view.
-3. **Dedicated Video CDN Integration (Recommended for Scale)**:
-   - For high-volume visitor traffic, configure a dedicated video processing pipeline such as:
-     - **Cloudflare Stream**: Automatic HLS adaptive bitrate streaming (~$5/mo).
-     - **Bunny.net Stream**: Ultra-low egress costs ($0.005/GB).
-     - **Mux Video**: Developer-first video transcoding.
-   - In the Studio Admin, you can simply paste the CDN stream URL into `playback_video_path` without touching any code!
+- [x] `.env.local` is added to `.gitignore` and has never been committed.
+- [x] No `service_role` secret keys exist anywhere in frontend code or Git history.
+- [x] Supabase Row Level Security (RLS) is enabled on all tables (`projects`, `site_settings`, `inquiries`, `admin_users`).
+- [x] `public.is_admin()` SQL function protects all project mutations and inquiry reads.
+- [x] Client contact inquiries are strictly private: public visitors cannot read other visitors' submissions.
+- [x] TUS chunked uploads authenticate via active administrator Supabase session token.

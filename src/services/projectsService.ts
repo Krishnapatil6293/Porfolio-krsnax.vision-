@@ -30,7 +30,12 @@ export const projectsService = {
   async getProjects(category?: string, publishedOnly: boolean = false): Promise<Project[]> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        let query = supabase.from('projects').select('*').order('sort_order', { ascending: true }).order('created_at', { ascending: false });
+        let query = supabase
+          .from('projects')
+          .select('*')
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: false });
+
         if (publishedOnly) {
           query = query.eq('is_published', true);
         }
@@ -39,15 +44,15 @@ export const projectsService = {
         }
 
         const { data, error } = await query;
-        if (error) throw error;
-        if (data && data.length > 0) return data as Project[];
-        // Fallback to local showcase if database is empty
+        if (!error && data && data.length > 0) {
+          return data as Project[];
+        }
       } catch (err) {
-        console.warn('Supabase query error, falling back to local showcase data:', err);
+        console.warn('Supabase projects query notice (using local showcase fallback if table not yet migrated):', err);
       }
     }
 
-    // Local / Offline fallback
+    // Local showcase fallback so visitors never see blank cards
     let list = getStoredLocalProjects();
     if (publishedOnly) {
       list = list.filter((p) => p.is_published);
@@ -61,11 +66,15 @@ export const projectsService = {
   async getProjectBySlug(slug: string): Promise<Project | null> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase.from('projects').select('*').eq('slug', slug).single();
-        if (error && error.code !== 'PGRST116') throw error;
-        if (data) return data as Project;
+        const { data, error } = await supabase
+          .from('projects')
+          .select('*')
+          .eq('slug', slug)
+          .maybeSingle();
+
+        if (!error && data) return data as Project;
       } catch (err) {
-        console.warn('Supabase getProjectBySlug error, falling back to local data:', err);
+        console.warn('Supabase getProjectBySlug notice:', err);
       }
     }
 
@@ -110,11 +119,22 @@ export const projectsService = {
 
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase.from('projects').insert([newProject]).select().single();
+        const { data, error } = await supabase
+          .from('projects')
+          .insert([newProject])
+          .select()
+          .single();
+
         if (error) throw error;
-        if (data) return data as Project;
+        if (data) {
+          // Also sync to local cache
+          const list = getStoredLocalProjects();
+          saveStoredLocalProjects([data as Project, ...list]);
+          return data as Project;
+        }
       } catch (err) {
-        console.warn('Supabase insert failed, saving to local state:', err);
+        console.warn('Supabase insert notice, preserving to local state:', err);
+        throw err;
       }
     }
 
@@ -132,11 +152,24 @@ export const projectsService = {
 
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase.from('projects').update(updatedFields).eq('id', id).select().single();
+        const { data, error } = await supabase
+          .from('projects')
+          .update(updatedFields)
+          .eq('id', id)
+          .select()
+          .single();
+
         if (error) throw error;
-        if (data) return data as Project;
+        if (data) {
+          const list = getStoredLocalProjects();
+          const idx = list.findIndex((p) => p.id === id);
+          if (idx !== -1) list[idx] = data as Project;
+          saveStoredLocalProjects(list);
+          return data as Project;
+        }
       } catch (err) {
-        console.warn('Supabase update failed, modifying local state:', err);
+        console.warn('Supabase update notice:', err);
+        throw err;
       }
     }
 
@@ -155,7 +188,8 @@ export const projectsService = {
         const { error } = await supabase.from('projects').delete().eq('id', id);
         if (error) throw error;
       } catch (err) {
-        console.warn('Supabase delete failed:', err);
+        console.warn('Supabase delete notice:', err);
+        throw err;
       }
     }
 
@@ -191,9 +225,31 @@ export const projectsService = {
           await supabase.from('projects').update({ sort_order: p.sort_order }).eq('id', p.id);
         }
       } catch (err) {
-        console.warn('Supabase reorder failed:', err);
+        console.warn('Supabase reorder notice:', err);
       }
     }
+  },
+
+  /**
+   * One-click synchronization utility to seed showcase projects directly into Supabase
+   */
+  async syncShowcaseToSupabase(): Promise<{ count: number }> {
+    if (!isSupabaseConfigured() || !supabase) {
+      throw new Error('Supabase client is not connected.');
+    }
+
+    const projectsToInsert = INITIAL_PROJECTS.map((p) => ({
+      ...p,
+      id: undefined, // Let Supabase generate canonical UUIDs
+    }));
+
+    const { data, error } = await supabase
+      .from('projects')
+      .upsert(projectsToInsert, { onConflict: 'slug' })
+      .select();
+
+    if (error) throw error;
+    return { count: data?.length || 0 };
   },
 
   async resetDemoProjects(): Promise<Project[]> {

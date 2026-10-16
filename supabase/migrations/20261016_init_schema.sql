@@ -1,11 +1,37 @@
 -- ==============================================================================
--- KRISHNA PATIL — CINEMATIC VIDEO EDITOR PORTFOLIO SCHEMA & RLS POLICIES
+-- KRISHNA PATIL — CINEMATIC VIDEO EDITOR PORTFOLIO SCHEMA & SECURE RLS POLICIES
+-- Target Supabase Project: https://khaixytdbwmtrtfkfunp.supabase.co
 -- ==============================================================================
 
--- 1. Enable pgcrypto / uuid-ossp if not already enabled
+-- 1. Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. PROJECTS TABLE
+-- 2. ADMIN USERS TABLE (Strict Role-Based Access Control)
+CREATE TABLE IF NOT EXISTS public.admin_users (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'superadmin')),
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Index for instant role lookups
+CREATE INDEX IF NOT EXISTS idx_admin_users_lookup ON public.admin_users(id, role);
+
+-- Secure Database Helper Function to verify Administrator privileges
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.admin_users
+    WHERE id = auth.uid() AND role IN ('admin', 'superadmin')
+  );
+$$;
+
+-- 3. PROJECTS TABLE
 CREATE TABLE IF NOT EXISTS public.projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
@@ -32,12 +58,12 @@ CREATE TABLE IF NOT EXISTS public.projects (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Indexing for high-performance gallery filtering and sorting
+-- Indexing for gallery filtering, sorting, and slugs
 CREATE INDEX IF NOT EXISTS idx_projects_published_sort ON public.projects(is_published, sort_order ASC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_projects_slug ON public.projects(slug);
 CREATE INDEX IF NOT EXISTS idx_projects_category ON public.projects(category);
 
--- 3. SITE SETTINGS TABLE
+-- 4. SITE SETTINGS TABLE
 CREATE TABLE IF NOT EXISTS public.site_settings (
     id TEXT PRIMARY KEY DEFAULT 'global',
     editor_name TEXT NOT NULL DEFAULT 'Krishna Patil',
@@ -48,14 +74,14 @@ CREATE TABLE IF NOT EXISTS public.site_settings (
     philosophy TEXT NOT NULL,
     portrait_url TEXT DEFAULT '/krishna-patil.jpg',
     availability_status TEXT DEFAULT 'Available for select projects',
-    skills JSONB DEFAULT '["Adobe Premiere Pro", "DaVinci Resolve Studio", "Adobe After Effects", "Final Cut Pro", "Color Grading", "Sound Design & Foley", "Pacing & Narrative Cutting", "Motion Graphics"]'::jsonb,
+    skills JSONB DEFAULT '["Adobe Premiere Pro", "DaVinci Resolve Studio", "Adobe After Effects", "Final Cut Pro", "Color Grading & ACES", "Sound Design & Foley", "Pacing & Narrative Cutting", "Motion Graphics"]'::jsonb,
     social_links JSONB DEFAULT '{"instagram": "", "youtube": "", "linkedin": "", "vimeo": ""}'::jsonb,
     contact_email TEXT DEFAULT 'kpctech1234@gmail.com',
     contact_phone TEXT DEFAULT '7066397018',
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 4. INQUIRIES TABLE
+-- 5. INQUIRIES TABLE
 CREATE TABLE IF NOT EXISTS public.inquiries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
@@ -77,57 +103,58 @@ CREATE INDEX IF NOT EXISTS idx_inquiries_status ON public.inquiries(status);
 -- ==============================================================================
 
 -- Enable RLS across all tables
+ALTER TABLE public.admin_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.site_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.inquiries ENABLE ROW LEVEL SECURITY;
 
--- PROJECTS POLICIES:
--- 1. Anyone (anonymous + authenticated) can view published projects
-CREATE POLICY "Public visitors can view published projects"
-    ON public.projects
-    FOR SELECT
-    USING (is_published = true OR auth.role() = 'authenticated');
-
--- 2. Only authenticated administrators can create, update, or delete projects
-CREATE POLICY "Only authenticated admin can insert projects"
-    ON public.projects
-    FOR INSERT
+-- ADMIN USERS POLICIES
+-- Users can check their own admin role
+CREATE POLICY "Users can check own admin role"
+    ON public.admin_users FOR SELECT
     TO authenticated
-    WITH CHECK (true);
+    USING (id = auth.uid() OR public.is_admin());
 
-CREATE POLICY "Only authenticated admin can update projects"
-    ON public.projects
-    FOR UPDATE
+-- PROJECTS POLICIES
+-- 1. Public can read published projects; Admins can read all projects (including drafts)
+CREATE POLICY "Public can view published projects"
+    ON public.projects FOR SELECT
+    USING (is_published = true OR public.is_admin());
+
+-- 2. Mutations strictly restricted to verified administrators (NOT any random authenticated user)
+CREATE POLICY "Only verified admin can insert projects"
+    ON public.projects FOR INSERT
     TO authenticated
-    USING (true)
-    WITH CHECK (true);
+    WITH CHECK (public.is_admin());
 
-CREATE POLICY "Only authenticated admin can delete projects"
-    ON public.projects
-    FOR DELETE
+CREATE POLICY "Only verified admin can update projects"
+    ON public.projects FOR UPDATE
     TO authenticated
-    USING (true);
+    USING (public.is_admin())
+    WITH CHECK (public.is_admin());
 
--- SITE SETTINGS POLICIES:
--- 1. Public can read site settings
+CREATE POLICY "Only verified admin can delete projects"
+    ON public.projects FOR DELETE
+    TO authenticated
+    USING (public.is_admin());
+
+-- SITE SETTINGS POLICIES
+-- Public can read site settings
 CREATE POLICY "Public can view site settings"
-    ON public.site_settings
-    FOR SELECT
+    ON public.site_settings FOR SELECT
     USING (true);
 
--- 2. Only authenticated administrators can update settings
-CREATE POLICY "Only authenticated admin can update site settings"
-    ON public.site_settings
-    FOR UPDATE
+-- Only verified admin can update site settings
+CREATE POLICY "Only verified admin can update site settings"
+    ON public.site_settings FOR UPDATE
     TO authenticated
-    USING (true)
-    WITH CHECK (true);
+    USING (public.is_admin())
+    WITH CHECK (public.is_admin());
 
--- INQUIRIES POLICIES (STRICT SECURITY):
--- 1. Public can insert new inquiries (Client Inquiry form)
+-- INQUIRIES POLICIES (STRICT DATA PRIVACY)
+-- Public can insert new project inquiry submissions
 CREATE POLICY "Public visitors can submit inquiries"
-    ON public.inquiries
-    FOR INSERT
+    ON public.inquiries FOR INSERT
     TO public
     WITH CHECK (
         length(name) >= 2 AND 
@@ -135,26 +162,28 @@ CREATE POLICY "Public visitors can submit inquiries"
         length(brief) >= 10
     );
 
--- 2. CRITICAL: Public CANNOT SELECT inquiries under any circumstances!
--- Only authenticated administrators can read inquiries.
-CREATE POLICY "Only authenticated admin can view inquiries"
-    ON public.inquiries
-    FOR SELECT
+-- CRITICAL: Public and ordinary users CANNOT read inquiries!
+-- Only verified administrators can read client briefs:
+CREATE POLICY "Only verified admin can view inquiries"
+    ON public.inquiries FOR SELECT
     TO authenticated
-    USING (true);
+    USING (public.is_admin());
 
-CREATE POLICY "Only authenticated admin can update inquiries"
-    ON public.inquiries
-    FOR UPDATE
+CREATE POLICY "Only verified admin can update inquiries"
+    ON public.inquiries FOR UPDATE
     TO authenticated
-    USING (true)
-    WITH CHECK (true);
+    USING (public.is_admin())
+    WITH CHECK (public.is_admin());
+
+CREATE POLICY "Only verified admin can delete inquiries"
+    ON public.inquiries FOR DELETE
+    TO authenticated
+    USING (public.is_admin());
 
 -- ==============================================================================
 -- STORAGE BUCKETS SETUP & SECURITY POLICIES
 -- ==============================================================================
 
--- Note: Storage buckets can be created in the Supabase Dashboard or via SQL:
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES 
     ('portfolio-videos', 'portfolio-videos', true, 5368709120, ARRAY['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska']),
@@ -165,7 +194,7 @@ ON CONFLICT (id) DO UPDATE SET
     file_size_limit = EXCLUDED.file_size_limit,
     allowed_mime_types = EXCLUDED.allowed_mime_types;
 
--- Storage RLS: Public read access for portfolio assets
+-- Storage RLS: Public can view portfolio media
 CREATE POLICY "Public Access To Portfolio Videos"
     ON storage.objects FOR SELECT
     USING (bucket_id = 'portfolio-videos');
@@ -178,36 +207,61 @@ CREATE POLICY "Public Access To Profile Media"
     ON storage.objects FOR SELECT
     USING (bucket_id = 'profile-media');
 
--- Storage RLS: Authenticated Admin Upload & Deletion only
-CREATE POLICY "Authenticated users can upload portfolio videos"
+-- Storage RLS: Only verified administrators can upload, update, or delete media
+CREATE POLICY "Admin upload portfolio videos"
     ON storage.objects FOR INSERT
     TO authenticated
-    WITH CHECK (bucket_id = 'portfolio-videos');
+    WITH CHECK (bucket_id = 'portfolio-videos' AND public.is_admin());
 
-CREATE POLICY "Authenticated users can update/delete portfolio videos"
+CREATE POLICY "Admin manage portfolio videos"
     ON storage.objects FOR ALL
     TO authenticated
-    USING (bucket_id = 'portfolio-videos');
+    USING (bucket_id = 'portfolio-videos' AND public.is_admin());
 
-CREATE POLICY "Authenticated users can upload thumbnails"
+CREATE POLICY "Admin upload thumbnails"
     ON storage.objects FOR INSERT
     TO authenticated
-    WITH CHECK (bucket_id = 'portfolio-thumbnails');
+    WITH CHECK (bucket_id = 'portfolio-thumbnails' AND public.is_admin());
 
-CREATE POLICY "Authenticated users can update/delete thumbnails"
+CREATE POLICY "Admin manage thumbnails"
     ON storage.objects FOR ALL
     TO authenticated
-    USING (bucket_id = 'portfolio-thumbnails');
+    USING (bucket_id = 'portfolio-thumbnails' AND public.is_admin());
 
-CREATE POLICY "Authenticated users can upload profile media"
+CREATE POLICY "Admin upload profile media"
     ON storage.objects FOR INSERT
     TO authenticated
-    WITH CHECK (bucket_id = 'profile-media');
+    WITH CHECK (bucket_id = 'profile-media' AND public.is_admin());
 
-CREATE POLICY "Authenticated users can update/delete profile media"
+CREATE POLICY "Admin manage profile media"
     ON storage.objects FOR ALL
     TO authenticated
-    USING (bucket_id = 'profile-media');
+    USING (bucket_id = 'profile-media' AND public.is_admin());
+
+-- ==============================================================================
+-- AUTOMATIC ADMIN PROVISIONING TRIGGER FOR kpctech1234@gmail.com
+-- Automatically links your Supabase Auth user to admin_users upon creation!
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.handle_new_admin_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.email = 'kpctech1234@gmail.com' THEN
+    INSERT INTO public.admin_users (id, email, role)
+    VALUES (NEW.id, NEW.email, 'admin')
+    ON CONFLICT (id) DO UPDATE SET role = 'admin';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_auth_user_created_admin ON auth.users;
+CREATE TRIGGER on_auth_user_created_admin
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_admin_user();
 
 -- ==============================================================================
 -- INITIAL SEED DATA FOR SITE SETTINGS

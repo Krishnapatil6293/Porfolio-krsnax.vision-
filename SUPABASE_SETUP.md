@@ -1,185 +1,141 @@
 # SUPABASE SETUP & CONFIGURATION GUIDE — KRISHNA PATIL PORTFOLIO
 
-This guide provides step-by-step instructions for provisioning your Supabase PostgreSQL database, Storage buckets, Row Level Security (RLS) policies, and setting up resumable 1–2 GB video uploads.
+This guide provides step-by-step instructions for provisioning your live Supabase PostgreSQL database, Storage buckets, Row Level Security (RLS) policies, Administrator Authentication, and configuring resumable 1–2 GB video uploads.
 
 ---
 
-## 1. Supabase Plan Limits & Realities for 1–2 GB Video Uploads
+## 1. Project Credentials
 
-> [!IMPORTANT]
-> **Plan Limitation Warning**:
-> - **Supabase Free Tier**: Configured with a hard maximum file upload limit of **50 MB** per object. Attempting to upload 1–2 GB video files on the Free tier will fail at the API gateway with `413 Payload Too Large`.
-> - **Supabase Pro Tier ($25/mo)**: Supports file uploads up to **5 GB** per object by default (expandable up to 50 GB upon request to Supabase support).
-> - **Requirement for 1–2 GB Uploads**: To reliably store 1–2 GB master video files, your Supabase project **must be on the Pro tier** or higher, with the bucket `file_size_limit` configured appropriately.
+Your Supabase project is configured with the following credentials:
 
----
+- **Supabase Project URL**: `https://khaixytdbwmtrtfkfunp.supabase.co`
+- **Supabase Publishable Key**: `sb_publishable_Q7a2cXVNY0UcwjW6T42nVQ_VD6twbzV`
+- **TUS Resumable Upload Endpoint**: `https://khaixytdbwmtrtfkfunp.supabase.co/storage/v1/upload/resumable`
 
-## 2. Storage Buckets Creation
-
-In your Supabase project dashboard, navigate to **Storage** and create the following three buckets:
-
-| Bucket Name | Public Access | Allowed File Types | File Size Limit |
-|---|---|---|---|
-| `portfolio-videos` | **Public** (or Private with signed URLs) | `video/mp4`, `video/quicktime`, `video/webm` | `5368709120` (5 GB) |
-| `portfolio-thumbnails` | **Public** | `image/jpeg`, `image/png`, `image/webp` | `20971520` (20 MB) |
-| `profile-media` | **Public** | `image/jpeg`, `image/png`, `image/webp` | `20971520` (20 MB) |
-
----
-
-## 3. Database Schema & RLS Execution
-
-Open the **SQL Editor** in your Supabase Dashboard, create a new query, and run the contents of `supabase/migrations/20261016_init_schema.sql`:
-
-```sql
--- Enables UUID generator
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- 1. Projects Table
-CREATE TABLE IF NOT EXISTS public.projects (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    title TEXT NOT NULL,
-    slug TEXT UNIQUE NOT NULL,
-    description TEXT NOT NULL,
-    category TEXT NOT NULL,
-    tags TEXT[] DEFAULT '{}',
-    client_name TEXT,
-    project_date TEXT,
-    thumbnail_path TEXT NOT NULL,
-    original_video_path TEXT NOT NULL,
-    playback_video_path TEXT,
-    video_duration_seconds INTEGER,
-    video_size_bytes BIGINT,
-    is_featured BOOLEAN DEFAULT false,
-    is_published BOOLEAN DEFAULT true,
-    sort_order INTEGER DEFAULT 0,
-    role_description TEXT,
-    tools_used TEXT[] DEFAULT '{}',
-    before_after_enabled BOOLEAN DEFAULT false,
-    before_thumbnail_path TEXT,
-    after_thumbnail_path TEXT,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Indexes for lightning fast gallery loads
-CREATE INDEX IF NOT EXISTS idx_projects_published ON public.projects(is_published, sort_order ASC, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_projects_slug ON public.projects(slug);
-
--- 2. Site Settings Table
-CREATE TABLE IF NOT EXISTS public.site_settings (
-    id TEXT PRIMARY KEY DEFAULT 'global',
-    editor_name TEXT NOT NULL DEFAULT 'Krishna Patil',
-    title TEXT NOT NULL DEFAULT 'Professional Video Editor',
-    headline TEXT NOT NULL DEFAULT 'Every Frame Has a Story.',
-    subheadline TEXT NOT NULL DEFAULT 'I’m Krishna Patil, a video editor crafting cinematic visuals, compelling stories, and edits that leave an impression.',
-    bio TEXT NOT NULL,
-    philosophy TEXT NOT NULL,
-    portrait_url TEXT DEFAULT '/krishna-patil.jpg',
-    availability_status TEXT DEFAULT 'Available for select projects',
-    skills JSONB DEFAULT '[]'::jsonb,
-    social_links JSONB DEFAULT '{}'::jsonb,
-    contact_email TEXT DEFAULT 'kpctech1234@gmail.com',
-    contact_phone TEXT DEFAULT '7066397018',
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- 3. Inquiries Table
-CREATE TABLE IF NOT EXISTS public.inquiries (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    project_type TEXT NOT NULL,
-    budget_range TEXT,
-    brief TEXT NOT NULL,
-    deadline TEXT,
-    status TEXT NOT NULL DEFAULT 'new',
-    created_at TIMESTAMPTZ DEFAULT now()
-);
-```
-
----
-
-## 4. Row Level Security (RLS) Rules
-
-Enable RLS on all tables and apply least-privilege security policies:
-
-```sql
-ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.site_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.inquiries ENABLE ROW LEVEL SECURITY;
-
--- PROJECTS
--- Anyone can view published projects
-CREATE POLICY "Public can view published projects"
-    ON public.projects FOR SELECT
-    USING (is_published = true OR auth.role() = 'authenticated');
-
--- Only authenticated administrator can create, update, or delete
-CREATE POLICY "Admin can modify projects"
-    ON public.projects FOR ALL
-    TO authenticated
-    USING (true);
-
--- SITE SETTINGS
-CREATE POLICY "Public can view site settings"
-    ON public.site_settings FOR SELECT
-    USING (true);
-
-CREATE POLICY "Admin can update site settings"
-    ON public.site_settings FOR UPDATE
-    TO authenticated
-    USING (true);
-
--- INQUIRIES (CRITICAL PRIVACY)
--- Public can INSERT their own inquiry
-CREATE POLICY "Public can submit inquiries"
-    ON public.inquiries FOR INSERT
-    TO public
-    WITH CHECK (length(name) >= 2 AND length(email) >= 5 AND length(brief) >= 10);
-
--- Public CANNOT view other client inquiries. Only authenticated admin can view:
-CREATE POLICY "Admin can read inquiries"
-    ON public.inquiries FOR SELECT
-    TO authenticated
-    USING (true);
-
-CREATE POLICY "Admin can manage inquiries"
-    ON public.inquiries FOR UPDATE
-    TO authenticated
-    USING (true);
-```
-
----
-
-## 5. Storage Security Policies
-
-```sql
--- Allow public viewing of portfolio media
-CREATE POLICY "Public Portfolio Video Access"
-    ON storage.objects FOR SELECT
-    USING (bucket_id IN ('portfolio-videos', 'portfolio-thumbnails', 'profile-media'));
-
--- Restrict uploads and deletions strictly to authenticated administrators
-CREATE POLICY "Admin Uploads"
-    ON storage.objects FOR INSERT
-    TO authenticated
-    WITH CHECK (bucket_id IN ('portfolio-videos', 'portfolio-thumbnails', 'profile-media'));
-
-CREATE POLICY "Admin Deletions"
-    ON storage.objects FOR DELETE
-    TO authenticated
-    USING (bucket_id IN ('portfolio-videos', 'portfolio-thumbnails', 'profile-media'));
-```
-
----
-
-## 6. Connecting Your Frontend
-
-In your local `.env` or production deployment dashboard:
+These are configured in `.env.local` for local development and in Vercel environment variables for production:
 ```env
-VITE_SUPABASE_URL=https://<your-project-ref>.supabase.co
-VITE_SUPABASE_ANON_KEY=<your-anon-public-key>
+VITE_SUPABASE_URL=https://khaixytdbwmtrtfkfunp.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_Q7a2cXVNY0UcwjW6T42nVQ_VD6twbzV
 VITE_DEV_ADMIN_ENABLED=false
 ```
 
-Never place `service_role` secrets in frontend client code.
+---
+
+## 2. Storage Quota & 1–2 GB Master Video Upload Realities
+
+> [!IMPORTANT]
+> **Plan Limit Requirements**:
+> - **Supabase Free Plan**: Hard upload limit of **50 MB** per object. Attempting to upload files > 50 MB will fail at the Supabase API Gateway with `413 Payload Too Large`.
+> - **Supabase Pro Plan ($25/mo)**: By default supports up to **5 GB** per object upload via TUS, and includes 100 GB storage + 250 GB bandwidth egress.
+> - **Action Required for 1–2 GB Uploads**: To upload 1–2 GB master video files, your Supabase project must be upgraded to **Pro** in the Supabase Dashboard under **Project Settings -> Subscription**.
+> - In your bucket settings, ensure the file size limit for `portfolio-videos` is set to `5368709120` (5 GB).
+
+---
+
+## 3. Database Migration & RLS Execution (One-Click)
+
+The database schema, RLS policies, indexes, and automatic admin provisioning trigger are contained in:
+`supabase/migrations/20261016_init_schema.sql`
+
+### How to apply this migration:
+1. Open your [Supabase Project Dashboard](https://supabase.com/dashboard/project/khaixytdbwmtrtfkfunp).
+2. In the left navigation menu, click **SQL Editor**.
+3. Click **"New query"** (or the **+** button).
+4. Copy the entire contents of [`supabase/migrations/20261016_init_schema.sql`](file:///Users/krishnapatil/Downloads/Portfolio%20web/supabase/migrations/20261016_init_schema.sql) and paste into the editor.
+5. Click **Run** (or press `Cmd + Enter` / `Ctrl + Enter`).
+6. You will see `Success. No rows returned`. All tables, indexes, RLS policies, and storage buckets are now created.
+
+---
+
+## 4. What Was Created in Your Database
+
+### Tables:
+1. `public.admin_users`:
+   - `id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE`
+   - `email TEXT UNIQUE NOT NULL`
+   - `role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'superadmin'))`
+   - Enforces least-privilege security: only verified admin accounts can access the dashboard.
+2. `public.projects`:
+   - Stores all video projects: `title`, unique `slug`, `description`, `category`, `tags`, `thumbnail_path`, `original_video_path`, `playback_video_path`, `video_duration_seconds`, `video_size_bytes`, `is_featured`, `is_published`, `sort_order`, `tools_used`, etc.
+3. `public.site_settings`:
+   - Global portfolio metadata (`editor_name`, `title`, `headline`, `subheadline`, `bio`, `philosophy`, `skills`, `contact_email`, etc.).
+4. `public.inquiries`:
+   - Private client submissions (`name`, `email`, `project_type`, `budget_range`, `brief`, `status`).
+
+### Security & Row Level Security (RLS) Policies:
+- **`public.is_admin()` Security Definer Function**:
+  - Securely verifies whether the requesting `auth.uid()` exists in `public.admin_users`.
+- **Public Permissions**:
+  - Visitors can **only** read `published = true` projects and `site_settings`.
+  - Visitors can **INSERT** an inquiry (with validation).
+  - Visitors **CANNOT** read other visitors' inquiries.
+  - Visitors **CANNOT** create, update, or delete any projects.
+- **Admin Permissions**:
+  - Only authenticated users with an entry in `admin_users` can insert/update/delete projects, manage inquiries, or upload/delete videos in storage.
+
+---
+
+## 5. Creating Your Administrator Account
+
+To log into your admin dashboard (`/admin`), follow these steps:
+
+### Option A: Via Supabase Dashboard (Recommended)
+1. Go to your [Supabase Dashboard](https://supabase.com/dashboard/project/khaixytdbwmtrtfkfunp) -> **Authentication** -> **Users**.
+2. Click **"Add user"** -> **"Create user"**.
+3. Enter:
+   - **User Email**: `kpctech1234@gmail.com`
+   - **Password**: *Choose a secure password*
+   - Check **"Auto Confirm User?"** to `ON` (so no email confirmation is needed).
+4. Click **"Create user"**.
+5. **The automatic trigger (`handle_new_admin_user()`) will instantly insert your user ID into `public.admin_users` with the `admin` role!**
+
+### Option B: If the User Was Already Created Before Running Migration
+If you had already created the user in Auth before running the SQL script, run this quick query in the SQL Editor to grant admin access:
+```sql
+INSERT INTO public.admin_users (id, email, role)
+SELECT id, email, 'admin'
+FROM auth.users
+WHERE email = 'kpctech1234@gmail.com'
+ON CONFLICT (id) DO UPDATE SET role = 'admin';
+```
+
+---
+
+## 6. Storage Buckets Verification
+
+The SQL migration automatically creates the required buckets. In your Supabase Dashboard -> **Storage**, verify that you see:
+
+1. **`portfolio-videos`**:
+   - Public: `true` (for streaming playback)
+   - Max file size: `5368709120` (5 GB)
+   - Allowed MIME types: `video/mp4`, `video/quicktime`, `video/webm`, `video/x-matroska`
+2. **`portfolio-thumbnails`**:
+   - Public: `true`
+   - Max file size: `20971520` (20 MB)
+   - Allowed MIME types: `image/jpeg`, `image/png`, `image/webp`, `image/avif`
+3. **`profile-media`**:
+   - Public: `true`
+   - Max file size: `20971520` (20 MB)
+
+---
+
+## 7. Large File Video Uploads (TUS Resumable)
+
+The application uses `tus-js-client` configured with:
+- Endpoint: `https://khaixytdbwmtrtfkfunp.supabase.co/storage/v1/upload/resumable`
+- Chunk size: `6 * 1024 * 1024` (6 MiB chunks as required by Supabase Storage)
+- Headers:
+  - `apikey`: Supabase Publishable Key
+  - `Authorization`: `Bearer <admin_jwt_access_token>`
+  - `x-upsert`: `true`
+- Retry delays: `[0, 3000, 5000, 10000, 20000]` for resilient network recovery
+- Real-time tracking: uploaded bytes, total bytes, percentage, upload speed (MB/s), and estimated time remaining.
+- Ability to pause, resume, or cancel at any moment.
+
+---
+
+## 8. Populating Initial Showcase Projects to Database
+
+Once you sign in to `/admin` using `kpctech1234@gmail.com`:
+1. In the top metrics banner, click the **"Sync Showcase To Supabase"** button.
+2. This will upload the curated showcase edits (Tokyo Noir, Apex Kinetic, Urban Velocity, Echoes of the North, Spectral Prisms, Master of Time) directly into your live Supabase database with all their metadata, tags, and thumbnails!

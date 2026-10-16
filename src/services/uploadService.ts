@@ -1,8 +1,14 @@
 import * as tus from 'tus-js-client';
-import { getSupabaseUrl, getSupabaseAnonKey, isSupabaseConfigured } from '../lib/supabase';
+import {
+  getSupabaseUrl,
+  getSupabasePublishableKey,
+  getActiveAccessToken,
+  isSupabaseConfigured,
+  supabase,
+} from '../lib/supabase';
 import type { UploadState } from '../types';
 
-export const CHUNK_SIZE_6MB = 6 * 1024 * 1024; // 6 MiB as specified by Supabase Storage
+export const CHUNK_SIZE_6MB = 6 * 1024 * 1024; // 6 MiB required by Supabase Storage TUS
 export const MAX_VIDEO_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5 GB limit (Pro tier max)
 export const FREE_TIER_LIMIT = 50 * 1024 * 1024; // 50 MB Free tier warning threshold
 
@@ -44,15 +50,18 @@ export const formatDuration = (seconds: number): string => {
 };
 
 export const uploadService = {
-  startTusVideoUpload(
+  /**
+   * Resumable large video upload (up to 2 GB+) using TUS chunked transfer
+   */
+  async startTusVideoUpload(
     file: File,
     options: UploadOptions
-  ): { controller: TusUploadController } {
+  ): Promise<{ controller: TusUploadController }> {
     const bucketName = options.bucketName || 'portfolio-videos';
     const sanitizedName = sanitizeFileName(file.name);
     const storagePath = `${bucketName}/${sanitizedName}`;
 
-    // Validate size
+    // Validate size limit
     if (file.size > MAX_VIDEO_FILE_SIZE) {
       options.onStateChange({
         status: 'error',
@@ -68,16 +77,16 @@ export const uploadService = {
       };
     }
 
-    // Supabase endpoint & headers
     const supabaseUrl = getSupabaseUrl();
-    const supabaseAnonKey = getSupabaseAnonKey();
+    const publishableKey = getSupabasePublishableKey();
+    const token = await getActiveAccessToken();
 
     let lastBytes = 0;
     let lastTime = Date.now();
     let isPaused = false;
     let isAborted = false;
 
-    // IF Supabase is configured, use real tus-js-client against Supabase Storage
+    // Real Supabase TUS resumable transfer
     if (isSupabaseConfigured()) {
       const endpoint = `${supabaseUrl}/storage/v1/upload/resumable`;
 
@@ -86,8 +95,8 @@ export const uploadService = {
         retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
         chunkSize: CHUNK_SIZE_6MB,
         headers: {
-          authorization: `Bearer ${supabaseAnonKey}`,
-          apikey: supabaseAnonKey,
+          authorization: `Bearer ${token}`,
+          apikey: publishableKey,
           'x-upsert': 'true',
         },
         uploadDataDuringCreation: true,
@@ -101,7 +110,7 @@ export const uploadService = {
           console.error('TUS Upload failed:', error);
           let userMsg = error.message || 'Video upload failed.';
           if (file.size > FREE_TIER_LIMIT && userMsg.includes('413')) {
-            userMsg = `Upload rejected (413 Payload Too Large). Supabase Free plan has a 50 MB limit. Please upgrade to Pro or adjust bucket limit for 1–2 GB files.`;
+            userMsg = `Upload rejected (413 Payload Too Large). Supabase Free plan has a 50 MB limit. Upgrade to Pro tier or adjust bucket limit for 1–2 GB files.`;
           }
           options.onStateChange({
             status: 'error',
@@ -158,7 +167,6 @@ export const uploadService = {
         },
       });
 
-      // Start upload
       upload.start();
 
       return {
@@ -196,15 +204,13 @@ export const uploadService = {
       };
     }
 
-    // MOCK SIMULATION MODE (When Supabase is not yet configured during development)
-    // Simulates genuine chunked 6 MiB uploads, speed calculation, pause, resume, and completion
+    // Fallback Mock simulation mode if Supabase is disconnected
     let simulatedUploaded = 0;
     let timerId: any = null;
 
     const runSimulationStep = () => {
       if (isPaused || isAborted) return;
 
-      // Simulate a 6 MiB chunk transfer every 400ms (~15 MB/s simulation)
       const simulatedChunk = Math.min(CHUNK_SIZE_6MB, file.size - simulatedUploaded);
       simulatedUploaded += simulatedChunk;
 
@@ -222,7 +228,7 @@ export const uploadService = {
           speed: '0 MB/s',
           estimatedTimeRemaining: '0s',
           storagePath: `portfolio-videos/${sanitizedName}`,
-          publicUrl: `/thumbnails/tokyo-noir.jpg`, // Preview fallback
+          publicUrl: `/thumbnails/tokyo-noir.jpg`,
         });
       } else {
         options.onStateChange({
@@ -273,6 +279,43 @@ export const uploadService = {
           });
         },
       },
+    };
+  },
+
+  /**
+   * Upload thumbnail image to `portfolio-thumbnails` bucket
+   */
+  async uploadThumbnailImage(file: File): Promise<{ storagePath: string; publicUrl: string }> {
+    const sanitizedName = sanitizeFileName(file.name);
+    const bucket = 'portfolio-thumbnails';
+
+    if (isSupabaseConfigured() && supabase) {
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .upload(sanitizedName, file, {
+          cacheControl: '3600',
+          upsert: true,
+        });
+
+      if (error) {
+        console.warn('Supabase thumbnail upload error:', error);
+        throw error;
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from(bucket)
+        .getPublicUrl(data.path);
+
+      return {
+        storagePath: `${bucket}/${data.path}`,
+        publicUrl: publicUrlData.publicUrl,
+      };
+    }
+
+    // Local object URL fallback
+    return {
+      storagePath: `${bucket}/${sanitizedName}`,
+      publicUrl: URL.createObjectURL(file),
     };
   },
 };
